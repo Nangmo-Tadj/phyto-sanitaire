@@ -1,0 +1,23 @@
+{
+  "name": "agrophyto-api",
+  "version": "1.0.0",
+  "description": "API de vente en ligne des produits phytosanitaires et aliments pour éleveurs",
+  "main": "src/server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node --no-warnings=ExperimentalWarning src/server.js",
+    "dev": "node --no-warnings=ExperimentalWarning --watch src/server.js",
+    "seed": "node --no-warnings=ExperimentalWarning src/seed.js",
+    "test": "node --no-warnings=ExperimentalWarning --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "jsonwebtoken": "^9.0.3",
+    "multer": "^2.4.0"
+  }
+}
