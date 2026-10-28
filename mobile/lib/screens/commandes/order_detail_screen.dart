@@ -9,6 +9,7 @@ import '../../utils/format.dart';
 import '../../widgets/common.dart';
 import '../catalogue/product_detail_screen.dart';
 import '../panier/payment_screen.dart';
+import 'receipt_screen.dart';
 
 /// Suivre une commande : statut, articles, paiements, livraison, avis.
 class OrderDetailScreen extends StatefulWidget {
@@ -64,6 +65,27 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
     }
   }
 
+  Future<void> _confirmerReception(Commande c) async {
+    if (!await confirmer(
+      context,
+      'Confirmer la réception',
+      'Avez-vous bien reçu tous les articles de la commande #${c.id} ?',
+      action: 'Oui, j’ai tout reçu',
+    )) {
+      return;
+    }
+    if (!mounted) return;
+    try {
+      await _api.confirmerReception(c.id);
+      if (mounted) {
+        showMessage(context, 'Merci ! Commande clôturée.');
+        _recharger();
+      }
+    } catch (e) {
+      if (mounted) showMessage(context, e, erreur: true);
+    }
+  }
+
   Future<void> _noter(Commande c) async {
     final r = await showDialog<(int, String)>(
       context: context,
@@ -85,7 +107,7 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
   Widget build(BuildContext context) {
     final monId = context.read<AuthState>().user?.id;
     return Scaffold(
-      appBar: AppBar(title: Text('Commande #${widget.commandeId}')),
+      appBar: AppBar(title: Text('Suivi de la commande #${widget.commandeId}')),
       body: RefreshIndicator(
         onRefresh: _recharger,
         child: AsyncView<Commande>(
@@ -119,10 +141,19 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
                           const SizedBox(height: 8),
                           Text('Motif : ${c.motifEchec}', style: const TextStyle(color: Colors.red)),
                         ],
+                        if (c.historique.length > 1) _Historique(etapes: c.historique),
                       ],
                     ),
                   ),
                 ),
+                if (estClient && c.statut == StatutCommande.livree) ...[
+                  const SizedBox(height: 12),
+                  FilledButton.icon(
+                    onPressed: () => _confirmerReception(c),
+                    icon: const Icon(Icons.inventory_2_outlined),
+                    label: const Text('Confirmer la réception'),
+                  ),
+                ],
                 if (estClient && c.payable) ...[
                   const SizedBox(height: 12),
                   if (c.paiementEnCours)
@@ -135,7 +166,10 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
                   else
                     FilledButton.icon(
                       onPressed: () async {
-                        await Navigator.push(context, MaterialPageRoute(builder: (_) => PaymentScreen(commande: c, depuisDetail: true)));
+                        await Navigator.push(
+                          context,
+                          MaterialPageRoute(builder: (_) => PaymentScreen(commande: c, depuisDetail: true)),
+                        );
                         if (mounted) _recharger();
                       },
                       icon: const Icon(Icons.payments_outlined),
@@ -239,9 +273,18 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
                     ),
                   ),
                 ],
+                if (!c.payable && c.statut != StatutCommande.annulee) ...[
+                  const SizedBox(height: 12),
+                  OutlinedButton.icon(
+                    onPressed: () =>
+                        Navigator.push(context, MaterialPageRoute(builder: (_) => ReceiptScreen(commande: c))),
+                    icon: const Icon(Icons.receipt_long_outlined),
+                    label: Text(c.paiementReussi?.numeroFacture != null ? 'Voir la facture' : 'Voir le reçu'),
+                  ),
+                ],
                 if (estClient) ...[
                   const SizedBox(height: 16),
-                  if (c.statut == StatutCommande.livree)
+                  if (c.livreeOuCloturee)
                     c.noteAvis == null
                         ? OutlinedButton.icon(
                             onPressed: () => _noter(c),
@@ -274,55 +317,141 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
   }
 }
 
-/// Frise de suivi : commande → payée → en livraison → livrée.
+/// Suivi : Reçue → Confirmée → En préparation → En cours de livraison → Livrée → Clôturée,
+/// avec la date de chaque étape franchie.
 class _Suivi extends StatelessWidget {
   const _Suivi({required this.commande});
   final Commande commande;
 
+  static const _icones = {
+    StatutCommande.enAttentePaiement: Icons.receipt_long,
+    StatutCommande.enCours: Icons.verified_outlined,
+    StatutCommande.enPreparation: Icons.inventory_2_outlined,
+    StatutCommande.enLivraison: Icons.local_shipping_outlined,
+    StatutCommande.livree: Icons.home_outlined,
+    StatutCommande.cloturee: Icons.task_alt,
+  };
+
+  /// Date de la dernière entrée de l'historique pour ce statut.
+  DateTime? _dateDe(String statut) => commande.historique
+      .lastWhere(
+        (e) => e.statut == statut,
+        orElse: () => EtapeCommande(statut: '', libelle: ''),
+      )
+      .date;
+
   @override
   Widget build(BuildContext context) {
     if (commande.statut == StatutCommande.annulee) {
-      return const Row(
+      return Row(
         children: [
-          Icon(Icons.block, color: Colors.grey),
-          SizedBox(width: 8),
-          Text('Cette commande a été annulée.'),
+          const Icon(Icons.block, color: Colors.grey),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Cette commande a été annulée${_dateDe(StatutCommande.annulee) == null ? '' : ' le ${dateHeure(_dateDe(StatutCommande.annulee))}'}.',
+            ),
+          ),
         ],
       );
     }
-    const etapes = [
-      (StatutCommande.enAttentePaiement, 'Commandée', Icons.receipt_long),
-      (StatutCommande.enCours, 'Payée', Icons.payments),
-      (StatutCommande.enLivraison, 'En route', Icons.local_shipping),
-      (StatutCommande.livree, 'Livrée', Icons.home),
-    ];
     final echec = commande.statut == StatutCommande.echecLivraison;
-    final courant = echec ? 2 : etapes.indexWhere((e) => e.$1 == commande.statut);
+    // En échec, la tournée (étape « En cours de livraison ») est l'étape en erreur.
+    final courant = echec
+        ? StatutCommande.etapes.indexOf(StatutCommande.enLivraison)
+        : StatutCommande.etapes.indexOf(commande.statut);
     final primary = Theme.of(context).colorScheme.primary;
-    return Row(
+    final etapes = StatutCommande.etapes;
+    return Column(
       children: [
-        for (var i = 0; i < etapes.length; i++) ...[
-          Column(
-            children: [
-              CircleAvatar(
-                radius: 18,
-                backgroundColor: i <= courant ? (echec && i == courant ? Colors.red : primary) : Colors.grey.shade300,
-                child: Icon(echec && i == courant ? Icons.error_outline : etapes[i].$3, size: 18, color: Colors.white),
-              ),
-              const SizedBox(height: 4),
-              Text(echec && i == courant ? 'Échec' : etapes[i].$2, style: const TextStyle(fontSize: 11)),
-            ],
+        for (var i = 0; i < etapes.length; i++)
+          IntrinsicHeight(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                SizedBox(
+                  width: 36,
+                  child: Column(
+                    children: [
+                      CircleAvatar(
+                        radius: 16,
+                        backgroundColor: echec && i == courant
+                            ? Colors.red
+                            : i <= courant
+                            ? primary
+                            : Colors.grey.shade300,
+                        child: Icon(
+                          echec && i == courant ? Icons.error_outline : _icones[etapes[i]],
+                          size: 17,
+                          color: Colors.white,
+                        ),
+                      ),
+                      if (i < etapes.length - 1)
+                        Expanded(child: Container(width: 3, color: i < courant ? primary : Colors.grey.shade300)),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.only(top: 6, bottom: 14),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          echec && i == courant ? 'Échec de livraison' : libelleStatut(etapes[i]),
+                          style: TextStyle(
+                            fontWeight: i == courant ? FontWeight.bold : FontWeight.w500,
+                            color: i <= courant ? null : Colors.grey,
+                          ),
+                        ),
+                        if (i <= courant && _dateDe(echec && i == courant ? commande.statut : etapes[i]) != null)
+                          Text(
+                            dateHeure(_dateDe(echec && i == courant ? commande.statut : etapes[i])),
+                            style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ),
-          if (i < etapes.length - 1)
-            Expanded(
-              child: Container(
-                height: 3,
-                margin: const EdgeInsets.only(bottom: 18),
-                color: i < courant ? primary : Colors.grey.shade300,
+      ],
+    );
+  }
+}
+
+/// Historique détaillé (commentaires, auteur de chaque changement).
+class _Historique extends StatelessWidget {
+  const _Historique({required this.etapes});
+  final List<EtapeCommande> etapes;
+
+  @override
+  Widget build(BuildContext context) {
+    return Theme(
+      data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+      child: ExpansionTile(
+        tilePadding: EdgeInsets.zero,
+        title: const Text('Historique détaillé', style: TextStyle(fontSize: 14)),
+        children: [
+          for (final e in etapes.reversed)
+            ListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(Icons.circle, size: 10, color: couleurStatut(e.statut)),
+              minLeadingWidth: 10,
+              title: Text(e.libelle),
+              subtitle: Text(
+                [
+                  dateHeure(e.date),
+                  if (e.commentaire != null) e.commentaire!,
+                  if (e.auteur != null) 'par ${e.auteur}',
+                ].join(' · '),
               ),
             ),
         ],
-      ],
+      ),
     );
   }
 }

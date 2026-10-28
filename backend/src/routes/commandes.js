@@ -2,7 +2,7 @@ const express = require('express');
 const { authenticate, requirePermission, hasPermission } = require('../middleware/auth');
 const { badRequest, forbidden, notFound, conflict, requireFields, toInt } = require('../errors');
 const { transaction } = require('../db');
-const { PERMISSIONS, STATUT, MODES_PAIEMENT } = require('../constants');
+const { PERMISSIONS, STATUT, STATUT_LIBELLES, STATUTS_A_LIVRER, MODES_PAIEMENT } = require('../constants');
 const { newReference } = require('../services/payment');
 
 // --- Panier (cas « Gestion du panier ») --------------------------------------
@@ -106,13 +106,22 @@ function detailCommande(db, idCommande) {
     )
     .all(idCommande);
   commande.avis = db.prepare('SELECT * FROM avis WHERE id_commande = ?').get(idCommande) || null;
+  commande.libelle_statut = STATUT_LIBELLES[commande.statut_commande] || commande.statut_commande;
+  commande.historique = db
+    .prepare(
+      `SELECT h.id_historique, h.statut, h.commentaire, h.date, a.prenom AS auteur_prenom, a.nom AS auteur_nom
+       FROM commande_historique h LEFT JOIN users a ON a.id_user = h.id_auteur
+       WHERE h.id_commande = ? ORDER BY h.date, h.id_historique`,
+    )
+    .all(idCommande)
+    .map((h) => ({ ...h, libelle: STATUT_LIBELLES[h.statut] || h.statut }));
   return commande;
 }
 
 function peutVoirCommande(db, user, commande) {
   if (commande.id_user === user.id_user || commande.id_livreur === user.id_user) return true;
   if (hasPermission(user, PERMISSIONS.COMMANDES_GERER)) return true;
-  if (hasPermission(user, PERMISSIONS.LIVRAISONS_EFFECTUER) && commande.statut_commande === STATUT.EN_COURS && !commande.id_livreur) {
+  if (hasPermission(user, PERMISSIONS.LIVRAISONS_EFFECTUER) && STATUTS_A_LIVRER.includes(commande.statut_commande) && !commande.id_livreur) {
     return true;
   }
   return Boolean(
@@ -178,7 +187,7 @@ function commandesRoutes({ db, commerce, notifier }) {
       return id;
     });
 
-    notifier.notify(req.user.id_user, 'commande', 'Commande enregistrée', `Commande #${idCommande} en attente de paiement.`);
+    commerce.suivreStatut(idCommande, STATUT.EN_ATTENTE_PAIEMENT, { auteur: req.user.id_user, commentaire: 'Commande enregistrée' });
     res.status(201).json(detailCommande(db, idCommande));
   });
 
@@ -211,6 +220,24 @@ function commandesRoutes({ db, commerce, notifier }) {
       db.prepare('UPDATE commandes SET statut_commande = ? WHERE id_commande = ?').run(STATUT.ANNULEE, id);
       commerce.restituerStock(id);
     });
+    commerce.suivreStatut(id, STATUT.ANNULEE, { auteur: req.user.id_user, commentaire: 'Annulée par le client' });
+    res.json(detailCommande(db, id));
+  });
+
+  // Le client confirme avoir reçu sa commande : elle est clôturée.
+  router.post('/:id/reception', (req, res) => {
+    const id = toInt(req.params.id, 'id');
+    const { changes } = db
+      .prepare('UPDATE commandes SET statut_commande = ? WHERE id_commande = ? AND id_user = ? AND statut_commande = ?')
+      .run(STATUT.CLOTUREE, id, req.user.id_user, STATUT.LIVREE);
+    if (!changes) {
+      if (!db.prepare('SELECT 1 FROM commandes WHERE id_commande = ? AND id_user = ?').get(id, req.user.id_user)) {
+        throw notFound('Commande introuvable');
+      }
+      throw conflict('Seule une commande livrée peut être réceptionnée');
+    }
+    commerce.suivreStatut(id, STATUT.CLOTUREE, { auteur: req.user.id_user, commentaire: 'Réception confirmée par le client' });
+    notifier.notifyAdmins('commande', 'Réception confirmée', `Le client a confirmé la réception de la commande #${id}.`);
     res.json(detailCommande(db, id));
   });
 
@@ -221,7 +248,9 @@ function commandesRoutes({ db, commerce, notifier }) {
     if (note > 5) throw badRequest('La note doit être comprise entre 1 et 5');
     const commande = db.prepare('SELECT * FROM commandes WHERE id_commande = ? AND id_user = ?').get(id, req.user.id_user);
     if (!commande) throw notFound('Commande introuvable');
-    if (commande.statut_commande !== STATUT.LIVREE) throw conflict('La commande doit être livrée pour être notée');
+    if (![STATUT.LIVREE, STATUT.CLOTUREE].includes(commande.statut_commande)) {
+      throw conflict('La commande doit être livrée pour être notée');
+    }
     db.prepare(
       `INSERT INTO avis (id_user, id_commande, note_avis, commentaire) VALUES (?, ?, ?, ?)
        ON CONFLICT (id_user, id_commande) WHERE id_commande IS NOT NULL
@@ -321,31 +350,41 @@ function livraisonsRoutes({ db, notifier, commerce }) {
 
   // consulterLivraisons() -> commandes à livrer + celles prises en charge.
   router.get('/', (req, res) => {
+    const aLivrer = STATUTS_A_LIVRER.map(() => '?').join(', ');
     const disponibles = db
       .prepare(
         `SELECT c.*, u.prenom AS client_prenom, u.nom AS client_nom FROM commandes c JOIN users u ON u.id_user = c.id_user
-         WHERE c.statut_commande = ? AND c.id_livreur IS NULL ORDER BY c.date_commande`,
+         WHERE c.statut_commande IN (${aLivrer}) AND c.id_livreur IS NULL ORDER BY c.date_commande`,
       )
-      .all(STATUT.EN_COURS);
+      .all(...STATUTS_A_LIVRER);
+    // Livraisons en cours d'abord, puis celles affectées par l'administrateur (à démarrer), puis l'historique.
     const mesLivraisons = db
       .prepare(
         `SELECT c.*, u.prenom AS client_prenom, u.nom AS client_nom FROM commandes c JOIN users u ON u.id_user = c.id_user
-         WHERE c.id_livreur = ? ORDER BY CASE c.statut_commande WHEN ? THEN 0 ELSE 1 END, c.date_commande DESC`,
+         WHERE c.id_livreur = ?
+         ORDER BY CASE WHEN c.statut_commande = ? THEN 0 WHEN c.statut_commande IN (${aLivrer}) THEN 1 ELSE 2 END,
+                  c.date_commande DESC`,
       )
-      .all(req.user.id_user, STATUT.EN_LIVRAISON);
+      .all(req.user.id_user, STATUT.EN_LIVRAISON, ...STATUTS_A_LIVRER);
     res.json({ disponibles, mes_livraisons: mesLivraisons });
   });
 
-  const commandeDe = (id) => db.prepare('SELECT * FROM commandes WHERE id_commande = ?').get(id);
-
   router.post('/:id/prendre', (req, res) => {
     const id = toInt(req.params.id, 'id');
+    // Commande libre, ou déjà affectée à ce livreur par l'administrateur.
     const { changes } = db
-      .prepare('UPDATE commandes SET statut_commande = ?, id_livreur = ? WHERE id_commande = ? AND statut_commande = ? AND id_livreur IS NULL')
-      .run(STATUT.EN_LIVRAISON, req.user.id_user, id, STATUT.EN_COURS);
+      .prepare(
+        `UPDATE commandes SET statut_commande = ?, id_livreur = ?
+         WHERE id_commande = ? AND statut_commande IN (${STATUTS_A_LIVRER.map(() => '?').join(', ')})
+           AND (id_livreur IS NULL OR id_livreur = ?)`,
+      )
+      .run(STATUT.EN_LIVRAISON, req.user.id_user, id, ...STATUTS_A_LIVRER, req.user.id_user);
     if (!changes) throw conflict('Commande indisponible');
-    const c = commandeDe(id);
-    notifier.notify(c.id_user, 'livraison', 'Commande en livraison', `Votre commande #${id} est en route avec ${req.user.prenom}.`);
+    commerce.suivreStatut(id, STATUT.EN_LIVRAISON, {
+      auteur: req.user.id_user,
+      commentaire: `Prise en charge par ${req.user.prenom} ${req.user.nom}`,
+      message: `Votre commande #${id} est en route avec ${req.user.prenom} (${req.user.telephone}).`,
+    });
     res.json(detailCommande(db, id));
   });
 
@@ -355,8 +394,7 @@ function livraisonsRoutes({ db, notifier, commerce }) {
       .prepare("UPDATE commandes SET statut_commande = ?, date_livraison = datetime('now') WHERE id_commande = ? AND id_livreur = ? AND statut_commande = ?")
       .run(STATUT.LIVREE, id, req.user.id_user, STATUT.EN_LIVRAISON);
     if (!changes) throw conflict('Statut incorrect : la commande n’est pas en livraison par vous');
-    const c = commandeDe(id);
-    notifier.notify(c.id_user, 'livraison', 'Commande livrée', `Votre commande #${id} a été livrée. Donnez votre avis !`);
+    commerce.suivreStatut(id, STATUT.LIVREE, { auteur: req.user.id_user, commentaire: 'Livraison effectuée' });
     res.json(detailCommande(db, id));
   });
 
@@ -367,8 +405,11 @@ function livraisonsRoutes({ db, notifier, commerce }) {
       .prepare('UPDATE commandes SET statut_commande = ?, motif_echec = ? WHERE id_commande = ? AND id_livreur = ? AND statut_commande = ?')
       .run(STATUT.ECHEC_LIVRAISON, req.body.motif, id, req.user.id_user, STATUT.EN_LIVRAISON);
     if (!changes) throw conflict('Statut incorrect : la commande n’est pas en livraison par vous');
-    const c = commandeDe(id);
-    notifier.notify(c.id_user, 'livraison', 'Échec de livraison', `Livraison #${id} non effectuée : ${req.body.motif}`);
+    commerce.suivreStatut(id, STATUT.ECHEC_LIVRAISON, {
+      auteur: req.user.id_user,
+      commentaire: req.body.motif,
+      message: `Livraison de la commande #${id} non effectuée : ${req.body.motif}. Nous vous recontactons.`,
+    });
     notifier.notifyAdmins('livraison', 'Échec de livraison', `Commande #${id} : ${req.body.motif}`);
     res.json(detailCommande(db, id));
   });

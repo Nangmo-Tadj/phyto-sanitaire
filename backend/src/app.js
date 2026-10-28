@@ -39,6 +39,7 @@ function createApp(options = {}) {
 
   const ctx = { db, config, notifier, commerce, paymentProvider };
   const app = express();
+  app.set('trust proxy', 'loopback'); // IP réelle derrière un proxy local (journal d'activité)
   app.use(cors());
   app.use(express.json({ limit: '1mb' }));
 
@@ -61,7 +62,7 @@ function createApp(options = {}) {
 
   app.get('/api/sante', (_req, res) => res.json({ statut: 'ok' }));
   // Paramètres publics de la plateforme (l'application adapte ses écrans, ex. ouverture de boutique).
-  app.get('/api/parametres', (_req, res) => res.json(lireParametres(db)));
+  app.get('/api/parametres', (_req, res) => res.json({ ...lireParametres(db), comptes_demo: config.demoAccounts }));
   app.use('/api/auth', authRoutes(ctx));
   app.use('/api/compte', compteRoutes(ctx));
   app.use('/api/newsletter', newsletterRoutes(ctx));

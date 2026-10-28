@@ -13,10 +13,12 @@ String heure(DateTime? d) => d == null ? '' : DateFormat('HH:mm').format(d);
 
 String libelleStatut(String statut) =>
     const {
-      StatutCommande.enAttentePaiement: 'En attente de paiement',
-      StatutCommande.enCours: 'Payée · en préparation',
-      StatutCommande.enLivraison: 'En livraison',
+      StatutCommande.enAttentePaiement: 'Reçue',
+      StatutCommande.enCours: 'Confirmée',
+      StatutCommande.enPreparation: 'En préparation',
+      StatutCommande.enLivraison: 'En cours de livraison',
       StatutCommande.livree: 'Livrée',
+      StatutCommande.cloturee: 'Clôturée',
       StatutCommande.echecLivraison: 'Échec de livraison',
       StatutCommande.annulee: 'Annulée',
     }[statut] ??
@@ -26,8 +28,10 @@ Color couleurStatut(String statut) =>
     const {
       StatutCommande.enAttentePaiement: Color(0xFFB26A00),
       StatutCommande.enCours: Color(0xFF1565C0),
+      StatutCommande.enPreparation: Color(0xFF00838F),
       StatutCommande.enLivraison: Color(0xFF6A1B9A),
       StatutCommande.livree: Color(0xFF2E7D32),
+      StatutCommande.cloturee: Color(0xFF1B5E20),
       StatutCommande.echecLivraison: Color(0xFFC62828),
       StatutCommande.annulee: Color(0xFF616161),
     }[statut] ??

@@ -102,7 +102,7 @@ class _CatalogueScreenState extends State<CatalogueScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text(
-          'AgroPhyto',
+          'fonction Phyto',
           style: TextStyle(color: AppColors.vert, fontWeight: FontWeight.w800),
         ),
         actions: [

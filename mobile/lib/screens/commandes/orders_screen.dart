@@ -94,11 +94,14 @@ class _OrdersScreenState extends State<OrdersScreen> {
                             children: [
                               Text(fcfa(c.total), style: const TextStyle(fontWeight: FontWeight.w700)),
                               const Spacer(),
-                              if (c.payable)
-                                Text(
-                                  'À payer',
-                                  style: TextStyle(color: couleurStatut(c.statut), fontWeight: FontWeight.w600),
-                                ),
+                              Text(
+                                c.payable
+                                    ? 'À payer'
+                                    : c.statut == StatutCommande.livree
+                                    ? 'Confirmez la réception'
+                                    : 'Suivre ma commande',
+                                style: TextStyle(color: couleurStatut(c.statut), fontWeight: FontWeight.w600),
+                              ),
                               const Icon(Icons.chevron_right),
                             ],
                           ),

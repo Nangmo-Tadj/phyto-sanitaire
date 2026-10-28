@@ -5,14 +5,18 @@ const { badRequest, unauthorized, forbidden, notFound, conflict, requireFields }
 const { transaction } = require('../db');
 const { ROLES, DEMO_ACCOUNTS } = require('../constants');
 const { lireParametres } = require('../services/parametres');
+const { journaliser } = require('../services/journal');
+const { verifierCode } = require('../services/totp');
+const { createLimiteur } = require('../services/securite');
 
 function publicUser(db, user) {
-  const { mdp, token_version, ...rest } = user;
+  const { mdp, token_version, totp_secret, ...rest } = user;
   const boutique = db.prepare('SELECT id_boutique, nom FROM boutiques WHERE id_vendeur = ?').get(user.id_user);
   return {
     ...rest,
     actif: Boolean(rest.actif),
     newsletter: Boolean(rest.newsletter),
+    totp_actif: Boolean(rest.totp_actif),
     ...loadRolesAndPermissions(db, user.id_user),
     boutique: boutique || null,
   };
@@ -20,6 +24,7 @@ function publicUser(db, user) {
 
 function authRoutes({ db, config }) {
   const router = express.Router();
+  const limiteur = createLimiteur();
 
   // Créer un compte (client ou vendeur ; livreur/admin sont attribués par l'administrateur).
   router.post('/inscription', (req, res) => {
@@ -59,16 +64,33 @@ function authRoutes({ db, config }) {
   });
 
   // Diagramme de séquence « Authentification utilisateur ».
+  // Avec la double authentification active, un premier appel sans « code » renvoie
+  // { deux_facteurs: true } ; l'application redemande alors le code à 6 chiffres.
   router.post('/connexion', (req, res) => {
     requireFields(req.body, ['identifiant', 'mot_de_passe']);
     const identifiant = String(req.body.identifiant).trim();
+    limiteur.verifier(identifiant);
     const user = db
       .prepare('SELECT * FROM users WHERE telephone = ? OR email = ?')
       .get(identifiant, identifiant.toLowerCase());
     if (!user || !bcrypt.compareSync(req.body.mot_de_passe, user.mdp)) {
+      limiteur.echec(identifiant);
+      if (user) journaliser(db, req, 'connexion.echec', 'Mot de passe incorrect', user.id_user);
       throw unauthorized("Nom d'utilisateur ou mot de passe incorrect");
     }
     if (!user.actif) throw forbidden('Compte désactivé. Contactez l’administrateur.');
+    if (user.totp_actif) {
+      if (!req.body.code) {
+        return res.json({ deux_facteurs: true, message: 'Saisissez le code de votre application d’authentification' });
+      }
+      if (!verifierCode(user.totp_secret, req.body.code)) {
+        limiteur.echec(identifiant);
+        journaliser(db, req, 'connexion.echec', 'Code de vérification incorrect', user.id_user);
+        throw unauthorized('Code de vérification incorrect');
+      }
+    }
+    limiteur.reussite(identifiant);
+    journaliser(db, req, 'connexion', null, user.id_user);
     db.prepare("UPDATE users SET derniere_connexion = datetime('now') WHERE id_user = ?").run(user.id_user);
     const fresh = db.prepare('SELECT * FROM users WHERE id_user = ?').get(user.id_user);
     res.json({ message: 'Connexion réussie', token: signToken(fresh), utilisateur: publicUser(db, fresh) });
@@ -82,6 +104,7 @@ function authRoutes({ db, config }) {
     if (!telephone) throw badRequest(`Profil de démonstration invalide (${Object.keys(DEMO_ACCOUNTS).join(', ')})`);
     const user = db.prepare('SELECT * FROM users WHERE telephone = ?').get(telephone);
     if (!user || !user.actif) throw notFound('Compte de démonstration indisponible');
+    journaliser(db, req, 'connexion.demo', profil, user.id_user);
     db.prepare("UPDATE users SET derniere_connexion = datetime('now') WHERE id_user = ?").run(user.id_user);
     const fresh = db.prepare('SELECT * FROM users WHERE id_user = ?').get(user.id_user);
     res.json({ message: 'Connexion de démonstration', token: signToken(fresh), utilisateur: publicUser(db, fresh) });

@@ -28,6 +28,7 @@ class User {
   final String? profil;
   final bool actif;
   final bool newsletter;
+  final bool totpActif;
   final DateTime? derniereConnexion;
   final List<String> roles;
   final List<String> permissions;
@@ -43,6 +44,7 @@ class User {
     this.profil,
     this.actif = true,
     this.newsletter = false,
+    this.totpActif = false,
     this.derniereConnexion,
     this.roles = const [],
     this.permissions = const [],
@@ -59,10 +61,13 @@ class User {
     profil: j['profil'],
     actif: j['actif'] == null ? true : _bool(j['actif']),
     newsletter: _bool(j['newsletter']),
+    totpActif: _bool(j['totp_actif']),
     derniereConnexion: _date(j['derniere_connexion']),
     roles: _strings(j['roles']),
     permissions: _strings(j['permissions']),
-    boutique: j['boutique'] == null ? null : BoutiqueResume(_int(j['boutique']['id_boutique']), j['boutique']['nom'] ?? ''),
+    boutique: j['boutique'] == null
+        ? null
+        : BoutiqueResume(_int(j['boutique']['id_boutique']), j['boutique']['nom'] ?? ''),
   );
 
   String get nomComplet => '$prenom $nom';
@@ -78,6 +83,7 @@ class Perm {
   static const utilisateursGerer = 'utilisateurs.gerer';
   static const rolesGerer = 'roles.gerer';
   static const commandesGerer = 'commandes.gerer';
+  static const journalVoir = 'journal.voir';
   static const paiementsVoir = 'paiements.voir';
   static const livraisonsEffectuer = 'livraisons.effectuer';
   static const livraisonRegles = 'livraison.regles';
@@ -252,14 +258,32 @@ class Panier {
 }
 
 /// Statuts de commande (voir backend/src/constants.js).
+/// Cycle : Reçue -> Confirmée -> En préparation -> En cours de livraison -> Livrée -> Clôturée.
 class StatutCommande {
-  static const enAttentePaiement = 'en_attente_paiement';
-  static const enCours = 'en_cours';
+  static const enAttentePaiement = 'en_attente_paiement'; // Reçue
+  static const enCours = 'en_cours'; // Confirmée
+  static const enPreparation = 'en_preparation';
   static const enLivraison = 'en_livraison';
   static const livree = 'livree';
+  static const cloturee = 'cloturee';
   static const echecLivraison = 'echec_livraison';
   static const annulee = 'annulee';
-  static const tous = [enAttentePaiement, enCours, enLivraison, livree, echecLivraison, annulee];
+  static const tous = [
+    enAttentePaiement,
+    enCours,
+    enPreparation,
+    enLivraison,
+    livree,
+    cloturee,
+    echecLivraison,
+    annulee,
+  ];
+
+  /// Étapes normales, dans l'ordre (suivi de commande).
+  static const etapes = [enAttentePaiement, enCours, enPreparation, enLivraison, livree, cloturee];
+
+  /// Commandes qu'un livreur peut démarrer.
+  static const aLivrer = [enCours, enPreparation];
 }
 
 class CommandeItem {
@@ -331,6 +355,25 @@ class Paiement {
   );
 }
 
+/// Étape de l'historique d'une commande.
+class EtapeCommande {
+  final String statut;
+  final String libelle;
+  final String? commentaire;
+  final String? auteur;
+  final DateTime? date;
+
+  EtapeCommande({required this.statut, required this.libelle, this.commentaire, this.auteur, this.date});
+
+  factory EtapeCommande.fromJson(Map<String, dynamic> j) => EtapeCommande(
+    statut: j['statut'] ?? '',
+    libelle: j['libelle'] ?? '',
+    commentaire: j['commentaire'],
+    auteur: j['auteur_prenom'] == null ? null : '${j['auteur_prenom']} ${j['auteur_nom'] ?? ''}'.trim(),
+    date: _date(j['date']),
+  );
+}
+
 class Commande {
   final int id;
   final int idUser;
@@ -352,6 +395,7 @@ class Commande {
   final int nbArticles;
   final List<CommandeItem> items;
   final List<Paiement> paiements;
+  final List<EtapeCommande> historique;
   final int? noteAvis;
 
   Commande({
@@ -375,6 +419,7 @@ class Commande {
     this.nbArticles = 0,
     this.items = const [],
     this.paiements = const [],
+    this.historique = const [],
     this.noteAvis,
   });
 
@@ -399,11 +444,16 @@ class Commande {
     nbArticles: _int(j['nb_articles'] ?? (j['items'] as List?)?.length),
     items: (j['items'] as List? ?? []).map((e) => CommandeItem.fromJson(e)).toList(),
     paiements: (j['paiements'] as List? ?? []).map((e) => Paiement.fromJson(e)).toList(),
+    historique: (j['historique'] as List? ?? []).map((e) => EtapeCommande.fromJson(e)).toList(),
     noteAvis: j['avis'] == null ? null : _int(j['avis']['note_avis']),
   );
 
   bool get payable => statut == StatutCommande.enAttentePaiement;
   bool get paiementEnCours => paiements.any((p) => p.statut == 'en_attente');
+  bool get livreeOuCloturee => statut == StatutCommande.livree || statut == StatutCommande.cloturee;
+
+  /// Paiement réussi (porte le numéro de facture).
+  Paiement? get paiementReussi => paiements.where((p) => p.statut == 'reussi').firstOrNull;
 }
 
 class Boutique {
@@ -580,8 +630,12 @@ class Role {
 
   Role({required this.id, required this.nom, this.description, this.permissions = const []});
 
-  factory Role.fromJson(Map<String, dynamic> j) =>
-      Role(id: _int(j['id_role']), nom: j['nom'] ?? '', description: j['description'], permissions: _strings(j['permissions']));
+  factory Role.fromJson(Map<String, dynamic> j) => Role(
+    id: _int(j['id_role']),
+    nom: j['nom'] ?? '',
+    description: j['description'],
+    permissions: _strings(j['permissions']),
+  );
 }
 
 class PermissionInfo {
@@ -603,6 +657,13 @@ class Livraisons {
 }
 
 class Statistiques {
+  final int commandesJour;
+  final int chiffreAffairesJour;
+  final int chiffreAffairesMois;
+  final int livraisonsEnCours;
+  final int aPreparer;
+  final int enAttentePaiement;
+  final int echecsLivraison;
   final int chiffreAffaires;
   final int nbCommandes;
   final int nbClients;
@@ -614,6 +675,13 @@ class Statistiques {
   final List<({int id, String nom, int stock})> stockBas;
 
   Statistiques({
+    this.commandesJour = 0,
+    this.chiffreAffairesJour = 0,
+    this.chiffreAffairesMois = 0,
+    this.livraisonsEnCours = 0,
+    this.aPreparer = 0,
+    this.enAttentePaiement = 0,
+    this.echecsLivraison = 0,
     required this.chiffreAffaires,
     required this.nbCommandes,
     required this.nbClients,
@@ -626,12 +694,21 @@ class Statistiques {
   });
 
   factory Statistiques.fromJson(Map<String, dynamic> j) => Statistiques(
+    commandesJour: _int(j['commandes_jour']),
+    chiffreAffairesJour: _int(j['chiffre_affaires_jour']),
+    chiffreAffairesMois: _int(j['chiffre_affaires_mois']),
+    livraisonsEnCours: _int(j['livraisons_en_cours']),
+    aPreparer: _int(j['a_preparer']),
+    enAttentePaiement: _int(j['en_attente_paiement']),
+    echecsLivraison: _int(j['echecs_livraison']),
     chiffreAffaires: _int(j['chiffre_affaires']),
     nbCommandes: _int(j['nb_commandes']),
     nbClients: _int(j['nb_clients']),
     nbProduits: _int(j['nb_produits']),
     panierMoyen: _int(j['panier_moyen']),
-    commandesParStatut: {for (final s in (j['commandes_par_statut'] as List? ?? [])) '${s['statut']}': _int(s['nombre'])},
+    commandesParStatut: {
+      for (final s in (j['commandes_par_statut'] as List? ?? [])) '${s['statut']}': _int(s['nombre']),
+    },
     ventesParJour: [
       for (final v in (j['ventes_par_jour'] as List? ?? []))
         (jour: '${v['jour']}', commandes: _int(v['commandes']), montant: _int(v['montant'])),
@@ -644,5 +721,39 @@ class Statistiques {
       for (final p in (j['stock_bas'] as List? ?? []))
         (id: _int(p['id_produit']), nom: '${p['nom']}', stock: _int(p['quantite_stock'])),
     ],
+  );
+}
+
+/// Entrée du journal d'activité (administration).
+class EntreeJournal {
+  final int id;
+  final int? idUser;
+  final String? utilisateur;
+  final String? telephone;
+  final String action;
+  final String? details;
+  final String? ip;
+  final DateTime? date;
+
+  EntreeJournal({
+    required this.id,
+    this.idUser,
+    this.utilisateur,
+    this.telephone,
+    required this.action,
+    this.details,
+    this.ip,
+    this.date,
+  });
+
+  factory EntreeJournal.fromJson(Map<String, dynamic> j) => EntreeJournal(
+    id: _int(j['id_journal']),
+    idUser: _intN(j['id_user']),
+    utilisateur: j['prenom'] == null ? null : '${j['prenom']} ${j['nom'] ?? ''}'.trim(),
+    telephone: j['telephone'],
+    action: j['action'] ?? '',
+    details: j['details'],
+    ip: j['ip'],
+    date: _date(j['date']),
   );
 }

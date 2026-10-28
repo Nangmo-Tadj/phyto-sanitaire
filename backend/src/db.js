@@ -115,6 +115,17 @@ CREATE TABLE IF NOT EXISTS commandes (
   date_livraison TEXT
 );
 
+-- Historique des statuts (suivi de commande côté client et administrateur).
+CREATE TABLE IF NOT EXISTS commande_historique (
+  id_historique INTEGER PRIMARY KEY AUTOINCREMENT,
+  id_commande INTEGER NOT NULL REFERENCES commandes(id_commande) ON DELETE CASCADE,
+  statut TEXT NOT NULL,
+  commentaire TEXT,
+  id_auteur INTEGER REFERENCES users(id_user) ON DELETE SET NULL,
+  date TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS ix_historique_commande ON commande_historique(id_commande);
+
 CREATE TABLE IF NOT EXISTS commande_items (
   id_commande INTEGER NOT NULL REFERENCES commandes(id_commande) ON DELETE CASCADE,
   id_produit INTEGER NOT NULL REFERENCES produits(id_produit),
@@ -199,6 +210,17 @@ CREATE TABLE IF NOT EXISTS parametres (
   date_modification TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Journal d'activité (connexions et actions d'administration).
+CREATE TABLE IF NOT EXISTS journal_activite (
+  id_journal INTEGER PRIMARY KEY AUTOINCREMENT,
+  id_user INTEGER REFERENCES users(id_user) ON DELETE SET NULL,
+  action TEXT NOT NULL,
+  details TEXT,
+  ip TEXT,
+  date TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS ix_journal_date ON journal_activite(date);
+
 CREATE TABLE IF NOT EXISTS newsletter (
   id_abonne INTEGER PRIMARY KEY AUTOINCREMENT,
   email TEXT NOT NULL UNIQUE COLLATE NOCASE,
@@ -210,7 +232,22 @@ function open(file = config.dbFile) {
   if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
   const db = new DatabaseSync(file);
   db.exec(SCHEMA);
+  migrer(db);
   return db;
+}
+
+/** Met à niveau une base créée par une version précédente. */
+function migrer(db) {
+  const colonnes = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
+  // Double authentification (TOTP) : secret en attente puis activé.
+  if (!colonnes.includes('totp_secret')) db.exec('ALTER TABLE users ADD COLUMN totp_secret TEXT');
+  if (!colonnes.includes('totp_actif')) db.exec('ALTER TABLE users ADD COLUMN totp_actif INTEGER NOT NULL DEFAULT 0');
+  // Commandes antérieures au suivi : un point de départ dans l'historique.
+  db.exec(
+    `INSERT INTO commande_historique (id_commande, statut, date)
+     SELECT c.id_commande, c.statut_commande, c.date_commande FROM commandes c
+     WHERE NOT EXISTS (SELECT 1 FROM commande_historique h WHERE h.id_commande = c.id_commande)`,
+  );
 }
 
 /** Exécute fn dans une transaction ; annule tout en cas d'exception. */

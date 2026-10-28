@@ -11,7 +11,7 @@ let server;
 let base;
 let db;
 let provider;
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'agrophyto-'));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'fonction-phyto-'));
 
 async function api(method, url, { token, body } = {}) {
   const res = await fetch(base + url, {
@@ -206,8 +206,19 @@ test('panier, commande, paiement, livraison et avis (parcours complet)', async (
 
   // Notifications et ventes vendeur.
   const notifs = await api('GET', '/api/notifications', { token: T.client });
-  assert.ok(notifs.data.items.some((n) => n.titre === 'Paiement réussi'));
-  assert.ok(notifs.data.items.some((n) => n.titre === 'Commande livrée'));
+  assert.ok(notifs.data.items.some((n) => n.titre === `Commande #${id} : Confirmée` && /Paiement de 15500 FCFA/.test(n.message)));
+  assert.ok(notifs.data.items.some((n) => n.titre === `Commande #${id} : Livrée`));
+
+  // Le client confirme la réception : la commande est clôturée, chaque étape est historisée.
+  assert.equal((await api('POST', `/api/commandes/${id}/reception`, { token: T.livreur })).status, 404);
+  const cloturee = await api('POST', `/api/commandes/${id}/reception`, { token: T.client });
+  assert.equal(cloturee.data.statut_commande, 'cloturee');
+  assert.equal(cloturee.data.libelle_statut, 'Clôturée');
+  assert.deepEqual(
+    cloturee.data.historique.map((h) => h.libelle),
+    ['Reçue', 'Confirmée', 'En cours de livraison', 'Livrée', 'Clôturée'],
+  );
+  assert.equal((await api('POST', `/api/commandes/${id}/reception`, { token: T.client })).status, 409);
   const ventes = await api('GET', '/api/boutiques/moi/ventes', { token: T.vendeur });
   assert.equal(ventes.data[0].quantite, 3);
 
@@ -235,8 +246,8 @@ test('annulation restitue le stock et échec de livraison', async () => {
   assert.equal(echec.data.statut_commande, 'echec_livraison');
   assert.equal(echec.data.motif_echec, 'Client absent');
 
-  const relance = await api('PATCH', `/api/admin/commandes/${c2.data.id_commande}/statut`, { token: T.admin, body: { statut: 'en_cours' } });
-  assert.equal(relance.data.statut_commande, 'en_cours');
+  const relance = await api('PATCH', `/api/admin/commandes/${c2.data.id_commande}/statut`, { token: T.admin, body: { statut: 'en_preparation' } });
+  assert.equal(relance.data.statut_commande, 'en_preparation');
   assert.equal(relance.data.id_livreur, null);
   const interdit = await api('PATCH', `/api/admin/commandes/${c2.data.id_commande}/statut`, { token: T.admin, body: { statut: 'livree' } });
   assert.equal(interdit.status, 409);
@@ -304,4 +315,108 @@ test('paramètres : l’administrateur ferme puis rouvre la création de boutiqu
 
   await api('PUT', '/api/admin/parametres', { token: T.admin, body: { creation_boutique: true } });
   assert.equal((await api('POST', '/api/boutiques', { token: client.token, body: { nom: 'Ma boutique' } })).status, 201);
+});
+
+test('suivi de livraison : validation, préparation, affectation d’un livreur, tableau de bord', async () => {
+  await api('POST', '/api/panier/items', { token: T.client, body: { id_produit: T.produit, quantite: 1 } });
+  const cmd = await api('POST', '/api/commandes', {
+    token: T.client,
+    body: { adresse_livraison: 'Bastos', ville: 'Douala', telephone_livraison: '600000004' },
+  });
+  const id = cmd.data.id_commande;
+  const patch = (url, body, token = T.admin) => api('PATCH', `/api/admin/commandes/${id}${url}`, { token, body });
+
+  // Filtres de la liste administrateur.
+  const filtre = await api('GET', '/api/admin/commandes?statut=en_attente_paiement,en_cours&ville=douala', { token: T.admin });
+  assert.ok(filtre.data.some((c) => c.id_commande === id && c.libelle_statut === 'Reçue'));
+  assert.equal((await api('GET', `/api/admin/commandes?q=%23${id}`, { token: T.admin })).data.length, 1);
+  assert.equal((await api('GET', '/api/admin/commandes?du=2020-13-01', { token: T.admin })).status, 400);
+
+  // Validation manuelle (paiement à la livraison), puis préparation.
+  assert.equal((await patch('/livreur', { id_livreur: T.livreurInfo.utilisateur.id_user })).status, 409);
+  assert.equal((await patch('/statut', { statut: 'en_cours' })).data.statut_commande, 'en_cours');
+  assert.equal((await patch('/statut', { statut: 'en_preparation' })).data.statut_commande, 'en_preparation');
+
+  // Affectation : la commande n'est plus proposée aux autres livreurs mais apparaît chez le livreur désigné.
+  assert.equal((await patch('/livreur', { id_livreur: T.vendeurInfo.utilisateur.id_user })).status, 400);
+  const affectee = await patch('/livreur', { id_livreur: T.livreurInfo.utilisateur.id_user });
+  assert.equal(affectee.data.id_livreur, T.livreurInfo.utilisateur.id_user);
+  assert.equal(affectee.data.statut_commande, 'en_preparation');
+  const tournee = await api('GET', '/api/livraisons', { token: T.livreur });
+  assert.ok(!tournee.data.disponibles.some((c) => c.id_commande === id));
+  assert.ok(tournee.data.mes_livraisons.some((c) => c.id_commande === id));
+
+  const stats = await api('GET', '/api/admin/statistiques', { token: T.admin });
+  for (const cle of ['commandes_jour', 'chiffre_affaires_jour', 'chiffre_affaires_mois', 'livraisons_en_cours', 'a_preparer']) {
+    assert.equal(typeof stats.data[cle], 'number', cle);
+  }
+  assert.ok(stats.data.a_preparer >= 1);
+
+  assert.equal((await api('POST', `/api/livraisons/${id}/prendre`, { token: T.livreur })).data.statut_commande, 'en_livraison');
+  assert.equal((await api('GET', '/api/admin/statistiques', { token: T.admin })).data.livraisons_en_cours, stats.data.livraisons_en_cours + 1);
+  await api('POST', `/api/livraisons/${id}/confirmer`, { token: T.livreur });
+  const fin = await patch('/statut', { statut: 'cloturee' });
+  assert.equal(fin.data.statut_commande, 'cloturee');
+  assert.ok(fin.data.historique.some((h) => /Livreur affecté/.test(h.commentaire || '')));
+
+  // Le client a été prévenu à chaque étape.
+  const notifs = (await api('GET', '/api/notifications', { token: T.client })).data.items.map((n) => n.titre);
+  for (const libelle of ['Reçue', 'Confirmée', 'En préparation', 'En cours de livraison', 'Livrée', 'Clôturée']) {
+    assert.ok(notifs.includes(`Commande #${id} : ${libelle}`), libelle);
+  }
+});
+
+test('sécurité : double authentification, blocage après échecs, journal d’activité', async () => {
+  const totp = require('../src/services/totp');
+  const tel = '600000009';
+  const compte = await inscrire(tel);
+  const token = compte.token;
+
+  assert.equal((await api('POST', '/api/compte/2fa/initier', { token, body: { mot_de_passe: 'mauvais' } })).status, 400);
+  const init = await api('POST', '/api/compte/2fa/initier', { token, body: { mot_de_passe: 'secret1' } });
+  assert.match(init.data.otpauth, /^otpauth:\/\/totp\/fonction%20Phyto/);
+  assert.equal((await api('POST', '/api/compte/2fa/activer', { token, body: { code: '000000' } })).status, 400);
+  const active = await api('POST', '/api/compte/2fa/activer', { token, body: { code: totp.codeTotp(init.data.secret) } });
+  assert.equal(active.data.totp_actif, true);
+  assert.equal(active.data.totp_secret, undefined);
+
+  // Connexion en deux étapes.
+  const etape1 = await api('POST', '/api/auth/connexion', { body: { identifiant: tel, mot_de_passe: 'secret1' } });
+  assert.equal(etape1.data.deux_facteurs, true);
+  assert.equal(etape1.data.token, undefined);
+  const etape2 = await api('POST', '/api/auth/connexion', {
+    body: { identifiant: tel, mot_de_passe: 'secret1', code: totp.codeTotp(init.data.secret) },
+  });
+  assert.ok(etape2.data.token);
+
+  // Blocage après 5 échecs, même avec le bon mot de passe.
+  for (let i = 0; i < 5; i++) {
+    await api('POST', '/api/auth/connexion', { body: { identifiant: tel, mot_de_passe: 'secret1', code: '000000' } });
+  }
+  assert.equal((await api('POST', '/api/auth/connexion', { body: { identifiant: tel, mot_de_passe: 'secret1' } })).status, 429);
+
+  const journal = await api('GET', `/api/admin/journal?id_user=${compte.utilisateur.id_user}`, { token: T.admin });
+  const actions = journal.data.map((j) => j.action);
+  assert.ok(actions.includes('compte.2fa.activer'));
+  assert.ok(actions.includes('connexion'));
+  assert.ok(actions.includes('connexion.echec'));
+  assert.equal((await api('GET', '/api/admin/journal', { token: T.client })).status, 403);
+
+  // Mot de passe fort exigé des administrateurs.
+  const faible = await api('PUT', '/api/compte/mot-de-passe', { token: T.admin, body: { ancien: 'secret1', nouveau: 'simple1' } });
+  assert.equal(faible.status, 400);
+});
+
+test('suppression de compte : données personnelles effacées, connexion impossible', async () => {
+  const tel = '600000010';
+  const compte = await inscrire(tel, { email: 'efface@test.cm' });
+  assert.equal((await api('DELETE', '/api/compte', { token: compte.token, body: { mot_de_passe: 'faux' } })).status, 400);
+  assert.equal((await api('DELETE', '/api/compte', { token: compte.token, body: { mot_de_passe: 'secret1' } })).status, 204);
+  assert.equal((await api('GET', '/api/compte', { token: compte.token })).status, 401);
+  assert.equal((await api('POST', '/api/auth/connexion', { body: { identifiant: tel, mot_de_passe: 'secret1' } })).status, 401);
+  const u = db.prepare('SELECT * FROM users WHERE id_user = ?').get(compte.utilisateur.id_user);
+  assert.equal(u.email, null);
+  assert.equal(u.telephone, `supprime-${u.id_user}`);
+  // L'identifiant est de nouveau libre.
+  await inscrire(tel);
 });

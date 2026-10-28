@@ -70,7 +70,11 @@ class AsyncView<T> extends StatelessWidget {
             message: snap.error is ApiException ? (snap.error as ApiException).message : '${snap.error}',
             action: onRetry == null
                 ? null
-                : OutlinedButton.icon(onPressed: onRetry, icon: const Icon(Icons.refresh), label: const Text('Réessayer')),
+                : OutlinedButton.icon(
+                    onPressed: onRetry,
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('Réessayer'),
+                  ),
           );
         }
         return builder(context, snap.data as T);
@@ -176,7 +180,9 @@ class ProductImage extends StatelessWidget {
       child: SizedBox(
         width: size,
         height: size,
-        child: url == null ? placeholder : Image.network(url, fit: BoxFit.cover, errorBuilder: (_, _, _) => placeholder),
+        child: url == null
+            ? placeholder
+            : Image.network(url, fit: BoxFit.cover, errorBuilder: (_, _, _) => placeholder),
       ),
     );
   }

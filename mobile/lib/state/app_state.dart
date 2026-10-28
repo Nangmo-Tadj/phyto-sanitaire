@@ -40,9 +40,12 @@ class AuthState extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> connexion(String identifiant, String motDePasse) async {
-    final (token, u) = await api.connexion(identifiant, motDePasse);
-    await _ouvrirSession(token, u);
+  /// Renvoie false si un code de double authentification est demandé.
+  Future<bool> connexion(String identifiant, String motDePasse, {String? code}) async {
+    final r = await api.connexion(identifiant, motDePasse, code: code);
+    if (r == null) return false;
+    await _ouvrirSession(r.$1, r.$2);
+    return true;
   }
 
   Future<void> connexionDemo(String profil) async {
@@ -77,6 +80,11 @@ class AuthState extends ChangeNotifier {
     } catch (_) {
       // Déconnexion locale même si le serveur est injoignable.
     }
+    await _fermer();
+  }
+
+  Future<void> supprimerCompte(String motDePasse) async {
+    await api.supprimerCompte(motDePasse);
     await _fermer();
   }
 
@@ -137,8 +145,12 @@ class ParametresState extends ChangeNotifier {
   /// Les utilisateurs peuvent ouvrir une boutique (et s'inscrire comme vendeur).
   bool creationBoutique = true;
 
+  /// Connexion aux comptes de démonstration ouverte par le serveur (désactivée en production).
+  bool comptesDemo = false;
+
   void _appliquer(Map<String, dynamic> d) {
     creationBoutique = d['creation_boutique'] as bool? ?? true;
+    comptesDemo = d['comptes_demo'] as bool? ?? comptesDemo;
     notifyListeners();
   }
 

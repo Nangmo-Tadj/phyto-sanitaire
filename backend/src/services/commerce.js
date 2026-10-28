@@ -1,5 +1,17 @@
 const { transaction } = require('../db');
-const { STATUT, PERMISSIONS } = require('../constants');
+const { STATUT, STATUT_LIBELLES, PERMISSIONS } = require('../constants');
+
+// Message envoyé au client (application + SMS) à chaque changement de statut.
+const MESSAGES_STATUT = {
+  [STATUT.EN_ATTENTE_PAIEMENT]: (id) => `Votre commande #${id} est bien reçue. Procédez au paiement pour la confirmer.`,
+  [STATUT.EN_COURS]: (id) => `Votre commande #${id} est confirmée. Nous la préparons.`,
+  [STATUT.EN_PREPARATION]: (id) => `Votre commande #${id} est en préparation.`,
+  [STATUT.EN_LIVRAISON]: (id) => `Votre commande #${id} est en route vers vous.`,
+  [STATUT.LIVREE]: (id) => `Votre commande #${id} a été livrée. Confirmez la réception dans l’application.`,
+  [STATUT.CLOTUREE]: (id) => `Commande #${id} clôturée. Merci pour votre confiance !`,
+  [STATUT.ECHEC_LIVRAISON]: (id) => `La livraison de votre commande #${id} n’a pas pu être effectuée.`,
+  [STATUT.ANNULEE]: (id) => `Votre commande #${id} a été annulée.`,
+};
 
 /** Logique métier partagée : panier, frais de livraison, résultat de paiement. */
 function createCommerce(db, notifier) {
@@ -48,6 +60,22 @@ function createCommerce(db, notifier) {
     };
   }
 
+  /**
+   * Enregistre un changement de statut dans l'historique et prévient le client.
+   * À appeler après la mise à jour de commandes.statut_commande.
+   */
+  function suivreStatut(idCommande, statut, { auteur = null, commentaire = null, message } = {}) {
+    db.prepare('INSERT INTO commande_historique (id_commande, statut, commentaire, id_auteur) VALUES (?, ?, ?, ?)').run(
+      idCommande,
+      statut,
+      commentaire,
+      auteur,
+    );
+    const commande = db.prepare('SELECT id_user FROM commandes WHERE id_commande = ?').get(idCommande);
+    const texte = message || MESSAGES_STATUT[statut]?.(idCommande) || `Commande #${idCommande} : ${statut}.`;
+    notifier.notify(commande.id_user, 'commande', `Commande #${idCommande} : ${STATUT_LIBELLES[statut] || statut}`, texte);
+  }
+
   /** Callback de l'opérateur de paiement (diagramme de séquence « paiement »). */
   function appliquerResultatPaiement(reference, succes, message) {
     const paiement = db.prepare('SELECT * FROM payements WHERE reference_transaction = ?').get(reference);
@@ -68,13 +96,13 @@ function createCommerce(db, notifier) {
       return { statut: 'echoue' };
     }
 
-    transaction(db, () => {
+    const confirmee = transaction(db, () => {
       db.prepare("UPDATE payements SET statut_paie = 'reussi', message = ? WHERE id_payement = ?").run(
         message || 'Paiement réussi',
         paiement.id_payement,
       );
-      // Mettre à jour statut = Payée -> la commande passe « en cours ».
-      db.prepare('UPDATE commandes SET statut_commande = ? WHERE id_commande = ? AND statut_commande = ?').run(
+      // Mettre à jour statut = Payée -> la commande passe « Confirmée ».
+      const { changes } = db.prepare('UPDATE commandes SET statut_commande = ? WHERE id_commande = ? AND statut_commande = ?').run(
         STATUT.EN_COURS,
         commande.id_commande,
         STATUT.EN_ATTENTE_PAIEMENT,
@@ -85,14 +113,15 @@ function createCommerce(db, notifier) {
         paiement.id_payement,
         numero,
       );
+      return changes > 0;
     });
 
-    notifier.notify(
-      commande.id_user,
-      'paiement',
-      'Paiement réussi',
-      `Votre paiement de ${paiement.montant} FCFA pour la commande #${commande.id_commande} est confirmé.`,
-    );
+    const texte = `Paiement de ${paiement.montant} FCFA reçu : votre commande #${commande.id_commande} est confirmée.`;
+    if (confirmee) {
+      suivreStatut(commande.id_commande, STATUT.EN_COURS, { commentaire: `Paiement ${paiement.mode_paie} réussi`, message: texte });
+    } else {
+      notifier.notify(commande.id_user, 'paiement', 'Paiement réussi', texte);
+    }
     notifier.notifyAdmins('commande', 'Nouvelle commande payée', `Commande #${commande.id_commande} à préparer.`);
     notifier.notifyPermission(
       PERMISSIONS.LIVRAISONS_EFFECTUER,
@@ -121,7 +150,7 @@ function createCommerce(db, notifier) {
     items.forEach((i) => upd.run(i.quantite, i.id_produit));
   }
 
-  return { fraisLivraison, panierId, lirePanier, appliquerResultatPaiement, restituerStock };
+  return { fraisLivraison, panierId, lirePanier, suivreStatut, appliquerResultatPaiement, restituerStock };
 }
 
 module.exports = { createCommerce };

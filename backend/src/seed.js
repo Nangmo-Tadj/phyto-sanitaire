@@ -22,11 +22,11 @@ transaction(db, () => {
     return id;
   };
 
-  addUser('Voukeng', 'Charles', 'admin@agrophyto.cm', '690000001', 'Yaoundé, Bastos', ['client', 'vendeur', 'admin']);
-  const vendeur = addUser('Nkeng', 'Paul', 'vendeur@agrophyto.cm', '690000002', 'Bafoussam, Marché A', ['client', 'vendeur']);
-  const vendeur2 = addUser('Mbarga', 'Alice', 'alice@agrophyto.cm', '690000005', 'Douala, Ndokoti', ['client', 'vendeur']);
-  addUser('Fotso', 'Jean', 'livreur@agrophyto.cm', '690000003', 'Yaoundé, Mvog-Mbi', ['client', 'livreur']);
-  addUser('Ngo', 'Marie', 'client@agrophyto.cm', '690000004', 'Yaoundé, Essos', ['client']);
+  addUser('Voukeng', 'Charles', 'admin@fonctionphyto.cm', '690000001', 'Yaoundé, Bastos', ['client', 'vendeur', 'admin']);
+  const vendeur = addUser('Nkeng', 'Paul', 'vendeur@fonctionphyto.cm', '690000002', 'Bafoussam, Marché A', ['client', 'vendeur']);
+  const vendeur2 = addUser('Mbarga', 'Alice', 'alice@fonctionphyto.cm', '690000005', 'Douala, Ndokoti', ['client', 'vendeur']);
+  addUser('Fotso', 'Jean', 'livreur@fonctionphyto.cm', '690000003', 'Yaoundé, Mvog-Mbi', ['client', 'livreur']);
+  addUser('Ngo', 'Marie', 'client@fonctionphyto.cm', '690000004', 'Yaoundé, Essos', ['client']);
 
   const boutique = (idVendeur, nom, desc, ville, tel) =>
     Number(db.prepare('INSERT INTO boutiques (id_vendeur, nom, description, adresse, ville, telephone) VALUES (?, ?, ?, ?, ?, ?)')
@@ -76,7 +76,7 @@ transaction(db, () => {
 db.close();
 console.log(`Base initialisée : ${config.dbFile}`);
 console.log(`Comptes (mot de passe « ${MDP} ») :
-  admin    690000001 / admin@agrophyto.cm
-  vendeur  690000002 / vendeur@agrophyto.cm
-  livreur  690000003 / livreur@agrophyto.cm
-  client   690000004 / client@agrophyto.cm`);
+  admin    690000001 / admin@fonctionphyto.cm
+  vendeur  690000002 / vendeur@fonctionphyto.cm
+  livreur  690000003 / livreur@fonctionphyto.cm
+  client   690000004 / client@fonctionphyto.cm`);

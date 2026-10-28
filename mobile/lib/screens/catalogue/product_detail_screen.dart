@@ -59,7 +59,7 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
       try {
         final support = await _api.support();
         id = support['id_user'] as int;
-        nom = 'Service client AgroPhyto';
+        nom = 'Service client fonction Phyto';
         tel = support['telephone'] as String?;
       } catch (e) {
         if (mounted) showMessage(context, e, erreur: true);
@@ -164,7 +164,7 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
                       Card(
                         child: ListTile(
                           leading: const CircleAvatar(child: Icon(Icons.storefront)),
-                          title: Text(p.boutique ?? 'AgroPhyto (plateforme)'),
+                          title: Text(p.boutique ?? 'fonction Phyto (plateforme)'),
                           subtitle: p.villeBoutique == null ? null : Text(p.villeBoutique!),
                           trailing: estMonProduit
                               ? null

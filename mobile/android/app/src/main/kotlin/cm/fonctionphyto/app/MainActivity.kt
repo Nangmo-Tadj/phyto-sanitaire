@@ -1,4 +1,4 @@
-package cm.agrophyto.agrophyto
+package cm.fonctionphyto.app
 
 import io.flutter.embedding.android.FlutterActivity
 

@@ -1,10 +1,11 @@
-# AgroPhyto — vente en ligne de produits phytosanitaires et d'aliments pour éleveurs
+# fonction Phyto — vente en ligne de produits phytosanitaires et d'aliments pour animaux
 
 Implémentation de la conception décrite dans le dossier « Analyse et conception d'une application mobile de vente en ligne des produits phytosanitaires et produits pour élevages » (cas du Cameroun).
 
 ```
 backend/   API REST Node.js (Express + SQLite)
 mobile/    Application mobile Flutter (Android / iOS)
+docs/      Publication Google Play, politique de confidentialité, remise des accès
 ```
 
 ## Démarrage
@@ -19,20 +20,22 @@ npm install
 npm run seed     # (ré)initialise la base avec des données de démonstration
 npm start        # http://localhost:3000/api
 npm test         # tests d'intégration des scénarios de la conception
+npm run creer-admin -- --telephone 6XXXXXXXX --prenom Prénom --nom Nom --email adresse@exemple.cm
+                 # compte administrateur système du propriétaire (mot de passe fort demandé)
 ```
 
-Variables d'environnement : `PORT`, `DB_FILE`, `UPLOAD_DIR`, `JWT_SECRET`, `JWT_EXPIRES_IN`, `PAYMENT_CALLBACK_SECRET`, `PAYMENT_MOCK_DELAY_MS`, `DEMO_ACCOUNTS` (`false` pour désactiver la connexion de démonstration).
+Variables d'environnement : `PORT`, `DB_FILE`, `UPLOAD_DIR`, `JWT_SECRET`, `JWT_EXPIRES_IN`, `PAYMENT_CALLBACK_SECRET`, `PAYMENT_MOCK_DELAY_MS`, `NODE_ENV`, `DEMO_ACCOUNTS` (`true`/`false` ; par défaut active en développement et **désactivée quand `NODE_ENV=production`**). En production, l'API refuse de démarrer sans `JWT_SECRET`.
 
 Comptes de démonstration (mot de passe `password123`) :
 
 | Rôle           | Identifiant                        |
 |----------------|------------------------------------|
-| Administrateur | `690000001` / admin@agrophyto.cm   |
-| Vendeur        | `690000002` / vendeur@agrophyto.cm |
-| Livreur        | `690000003` / livreur@agrophyto.cm |
-| Client         | `690000004` / client@agrophyto.cm  |
+| Administrateur | `690000001` / admin@fonctionphyto.cm |
+| Vendeur        | `690000002` / vendeur@fonctionphyto.cm |
+| Livreur        | `690000003` / livreur@fonctionphyto.cm |
+| Client         | `690000004` / client@fonctionphyto.cm |
 
-Dans l'application, l'écran de connexion propose aussi « Compte de démonstration » : un appui sur Client, Vendeur, Livreur ou Admin ouvre directement la session correspondante, sans mot de passe (route `POST /api/auth/demo`). Ces comptes étant partagés, s'y déconnecter ne ferme pas la session des autres visiteurs. À désactiver en production avec `DEMO_ACCOUNTS=false`.
+Dans l'application, l'écran de connexion propose aussi « Compte de démonstration » : un appui sur Client, Vendeur, Livreur ou Admin ouvre directement la session correspondante, sans mot de passe (route `POST /api/auth/demo`). Ces comptes étant partagés, s'y déconnecter ne ferme pas la session des autres visiteurs. L'encadré n'apparaît que si le serveur les autorise (jamais en production : le compte Admin de démonstration donnerait l'accès complet à tous).
 
 L'administrateur peut fermer ou rouvrir la création de boutiques par les utilisateurs (Administration → Paramètres de la plateforme, ou `PUT /api/admin/parametres {"creation_boutique": false}`). Fermée, elle bloque l'ouverture de boutique et l'inscription vendeur, sauf pour les administrateurs ; les boutiques existantes ne sont pas touchées.
 
@@ -109,13 +112,31 @@ Les fichiers `backend/test/api.test.js` vérifient chaque diagramme, y compris s
 - **Paiement :** « Commande introuvable ou déjà payée ». Si le paiement est accepté, la commande passe `en_cours` et une facture est émise ; s'il est refusé, le client peut réessayer.
 - **Gestion des livraisons :** prise en charge (« Commande indisponible »), passage `en_livraison`, confirmation `livree` (« statut incorrect »), et `echec_livraison` avec un motif.
 
-Cycle de vie d'une commande :
+### Cycle de vie d'une commande
 
-```
-en_attente_paiement ──paiement réussi──▶ en_cours ──prise en charge──▶ en_livraison ──▶ livree
-        │                                    │                              └──────────▶ echec_livraison ──▶ en_cours (relance)
-        └──────────── annulee ◀──────────────┘
-```
+| Statut (API)          | Libellé               | Qui fait avancer                                              |
+|-----------------------|-----------------------|---------------------------------------------------------------|
+| `en_attente_paiement` | Reçue                 | création par le client                                         |
+| `en_cours`            | Confirmée             | paiement réussi, ou validation par l'admin (paiement à la livraison) |
+| `en_preparation`      | En préparation        | administrateur                                                 |
+| `en_livraison`        | En cours de livraison | le livreur démarre (commande libre ou affectée par l'admin)    |
+| `livree`              | Livrée                | le livreur confirme                                            |
+| `cloturee`            | Clôturée              | le client confirme la réception (ou l'admin)                   |
+| `echec_livraison`     | Échec de livraison    | le livreur, avec un motif ; l'admin relance ou annule          |
+| `annulee`             | Annulée               | client (avant paiement) ou admin ; le stock est restitué       |
+
+Chaque changement est enregistré dans `commande_historique` (date, auteur, commentaire) et notifié au client dans l'application et par SMS. Le client suit sa commande sur une frise (Suivi de la commande) et consulte son reçu ou sa facture. L'administrateur filtre les commandes (statut, n°/client/téléphone, période), affecte un livreur (`PATCH /api/admin/commandes/:id/livreur`) et suit un tableau de bord : commandes du jour, chiffre d'affaires du jour et du mois, livraisons en cours, commandes à préparer.
+
+### Sécurité de l'administration
+
+- **Compte propriétaire :** `npm run creer-admin` (accès complet, mot de passe fort : 10 caractères, majuscule, minuscule, chiffre).
+- **Double authentification** (Compte → Double authentification) : code à 6 chiffres TOTP, compatible Google ou Microsoft Authenticator.
+- **Blocage** d'un identifiant pendant 15 minutes après 5 échecs de connexion.
+- **Journal d'activité** (Administration → Journal d'activité, `GET /api/admin/journal`) : connexions, échecs, changements de statut, rôles, paramètres…
+
+## Publication sur Google Play
+
+Voir [`docs/google-play.md`](docs/google-play.md) (fiche, signature, construction du `.aab`, tests) et [`docs/passation.md`](docs/passation.md) (remise des accès au propriétaire).
 
 ## Paiement mobile
 

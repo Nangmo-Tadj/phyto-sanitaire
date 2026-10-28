@@ -1,6 +1,6 @@
 // Parcours de bout en bout contre l'API locale (npm run seed && npm start).
 //   flutter test integration_test/parcours_test.dart -d <simulateur>
-import 'package:agrophyto/main.dart' as app;
+import 'package:fonction_phyto/main.dart' as app;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
@@ -123,11 +123,27 @@ void main() {
     await attendre(tester);
     await deconnexion(tester);
 
+    // --- Client : confirmation de réception -> commande clôturée -------------------
+    await connexion(tester, '690000004');
+    await toucher(tester, find.text('Commandes'));
+    await attendreQue(tester, find.text('Confirmez la réception'));
+    await toucher(tester, find.text('Confirmez la réception').first);
+    await attendreQue(tester, find.text('Confirmer la réception'));
+    await capture(tester, '12b_suivi_livree');
+    await toucher(tester, find.text('Confirmer la réception'));
+    await toucher(tester, find.text('Oui, j’ai tout reçu'));
+    await attendreQue(tester, find.text('Clôturée'));
+    await capture(tester, '12c_cloturee');
+    await toucher(tester, find.byType(BackButton).last);
+    await attendre(tester);
+    await deconnexion(tester);
+
     // --- Administrateur : tableau de bord ----------------------------------------
     await connexion(tester, '690000001');
     await toucher(tester, find.text('Compte'));
     await toucher(tester, find.text('Administration'));
     await attendreQue(tester, find.textContaining('Bonjour'));
+    await attendreQue(tester, find.text('Tableau de bord'));
     await attendre(tester, const Duration(seconds: 2));
     await capture(tester, '13_admin_dashboard');
     await tester.drag(find.byType(Scrollable).first, const Offset(0, -700));

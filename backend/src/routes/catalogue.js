@@ -1,7 +1,7 @@
 const express = require('express');
 const { authenticate, requirePermission, hasPermission } = require('../middleware/auth');
 const { badRequest, forbidden, notFound, conflict, requireFields, toInt } = require('../errors');
-const { PERMISSIONS, STATUT } = require('../constants');
+const { PERMISSIONS, STATUT, STATUTS_PAYES } = require('../constants');
 const { lireParametres } = require('../services/parametres');
 
 const PRODUIT_SELECT = `
@@ -171,9 +171,9 @@ function produitsRoutes({ db }) {
     const achete = db
       .prepare(
         `SELECT 1 FROM commandes c JOIN commande_items ci ON ci.id_commande = c.id_commande
-         WHERE c.id_user = ? AND ci.id_produit = ? AND c.statut_commande IN (?, ?, ?)`,
+         WHERE c.id_user = ? AND ci.id_produit = ? AND c.statut_commande IN (${STATUTS_PAYES.map(() => '?').join(', ')})`,
       )
-      .get(req.user.id_user, id, STATUT.EN_COURS, STATUT.EN_LIVRAISON, STATUT.LIVREE);
+      .get(req.user.id_user, id, ...STATUTS_PAYES);
     if (!achete) throw forbidden('Vous devez avoir acheté ce produit pour donner un avis');
     db.prepare(
       `INSERT INTO avis (id_user, id_produit, note_avis, commentaire) VALUES (?, ?, ?, ?)

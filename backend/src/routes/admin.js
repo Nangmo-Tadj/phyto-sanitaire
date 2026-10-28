@@ -2,7 +2,8 @@ const express = require('express');
 const { authenticate, requirePermission, loadRolesAndPermissions } = require('../middleware/auth');
 const { badRequest, forbidden, notFound, conflict, requireFields, toInt } = require('../errors');
 const { transaction } = require('../db');
-const { PERMISSIONS, STATUT } = require('../constants');
+const { PERMISSIONS, STATUT, STATUT_LIBELLES, STATUTS_PAYES } = require('../constants');
+const { journaliser } = require('../services/journal');
 const { detailCommande } = require('./commandes');
 const { DEFAUTS_PARAMETRES, lireParametres, ecrireParametre } = require('../services/parametres');
 
@@ -37,6 +38,7 @@ function adminRoutes({ db, commerce, notifier }) {
       if (typeof valeur !== 'boolean') throw badRequest(`Valeur invalide pour ${cle} (true ou false attendu)`);
     }
     transaction(db, () => Object.entries(req.body).forEach(([cle, valeur]) => ecrireParametre(db, cle, valeur)));
+    journaliser(db, req, 'parametres.modifier', req.body);
     res.json(lireParametres(db));
   });
 
@@ -63,6 +65,7 @@ function adminRoutes({ db, commerce, notifier }) {
       .prepare('UPDATE users SET actif = ?, token_version = token_version + ? WHERE id_user = ?')
       .run(actif ? 1 : 0, actif ? 0 : 1, id);
     if (!changes) throw notFound('Utilisateur introuvable');
+    journaliser(db, req, actif ? 'utilisateur.activer' : 'utilisateur.desactiver', { id_user: id });
     res.json({ id_user: id, actif });
   });
 
@@ -84,6 +87,7 @@ function adminRoutes({ db, commerce, notifier }) {
       db.prepare('DELETE FROM user_roles WHERE id_user = ?').run(id);
       ids.forEach((r) => db.prepare('INSERT INTO user_roles (id_user, id_role) VALUES (?, ?)').run(id, r));
     });
+    journaliser(db, req, 'utilisateur.roles', { id_user: id, roles });
     res.json({ id_user: id, ...loadRolesAndPermissions(db, id) });
   });
 
@@ -109,6 +113,7 @@ function adminRoutes({ db, commerce, notifier }) {
     const nom = String(req.body.nom).trim().toLowerCase();
     if (db.prepare('SELECT 1 FROM roles WHERE nom = ?').get(nom)) throw conflict('Rôle existant');
     const { lastInsertRowid } = db.prepare('INSERT INTO roles (nom, description) VALUES (?, ?)').run(nom, req.body.description || null);
+    journaliser(db, req, 'role.creer', { nom });
     res.status(201).json(roleAvecPermissions(db.prepare('SELECT * FROM roles WHERE id_role = ?').get(lastInsertRowid)));
   });
 
@@ -126,16 +131,44 @@ function adminRoutes({ db, commerce, notifier }) {
         db.prepare('INSERT INTO role_permissions (id_role, id_permission) VALUES (?, ?)').run(role.id_role, p.id_permission);
       }
     });
+    journaliser(db, req, 'role.permissions', { role: role.nom, permissions: perms });
     res.json(roleAvecPermissions(role));
   });
 
   // --- Commandes ----------------------------------------------------------------------
+  // Filtres : statut (un ou plusieurs, séparés par des virgules), q (n°, client, téléphone),
+  // du / au (dates AAAA-MM-JJ), ville, id_livreur.
   router.get('/commandes', perm(PERMISSIONS.COMMANDES_GERER), (req, res) => {
     const params = [];
     let where = '1 = 1';
-    if (req.query.statut) {
-      where += ' AND c.statut_commande = ?';
-      params.push(req.query.statut);
+    const statuts = String(req.query.statut || '').split(',').map((v) => v.trim()).filter(Boolean);
+    if (statuts.length) {
+      where += ` AND c.statut_commande IN (${statuts.map(() => '?').join(', ')})`;
+      params.push(...statuts);
+    }
+    const brut = String(req.query.q || '').trim();
+    const q = brut.replace(/^#/, '');
+    if (brut.startsWith('#')) {
+      // « #12 » : recherche par numéro de commande uniquement.
+      where += ' AND c.id_commande = ?';
+      params.push(toInt(q, 'q'));
+    } else if (q) {
+      where += " AND (CAST(c.id_commande AS TEXT) = ? OR (u.prenom || ' ' || u.nom) LIKE ? OR u.telephone LIKE ? OR c.telephone_livraison LIKE ?)";
+      params.push(q, `%${q}%`, `%${q}%`, `%${q}%`);
+    }
+    for (const [cle, op] of [['du', '>='], ['au', '<=']]) {
+      if (!req.query[cle]) continue;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(req.query[cle]) || Number.isNaN(Date.parse(req.query[cle]))) throw badRequest(`Date « ${cle} » invalide (AAAA-MM-JJ)`);
+      where += ` AND date(c.date_commande) ${op} ?`;
+      params.push(req.query[cle]);
+    }
+    if (req.query.ville) {
+      where += ' AND c.ville = ? COLLATE NOCASE';
+      params.push(String(req.query.ville).trim());
+    }
+    if (req.query.id_livreur) {
+      where += ' AND c.id_livreur = ?';
+      params.push(toInt(req.query.id_livreur, 'id_livreur'));
     }
     const rows = db
       .prepare(
@@ -143,19 +176,26 @@ function adminRoutes({ db, commerce, notifier }) {
          FROM commandes c JOIN users u ON u.id_user = c.id_user LEFT JOIN users l ON l.id_user = c.id_livreur
          WHERE ${where} ORDER BY c.date_commande DESC, c.id_commande DESC LIMIT 200`,
       )
-      .all(...params);
+      .all(...params)
+      .map((c) => ({ ...c, libelle_statut: STATUT_LIBELLES[c.statut_commande] || c.statut_commande }));
     res.json(rows);
   });
 
   // Transitions autorisées pour la mise à jour manuelle du statut.
+  // Reçue -> Confirmée : validation manuelle (ex. paiement à la livraison).
   const TRANSITIONS = {
-    [STATUT.EN_ATTENTE_PAIEMENT]: [STATUT.ANNULEE],
-    [STATUT.EN_COURS]: [STATUT.EN_LIVRAISON, STATUT.ANNULEE],
-    [STATUT.EN_LIVRAISON]: [STATUT.LIVREE, STATUT.ECHEC_LIVRAISON, STATUT.EN_COURS],
-    [STATUT.ECHEC_LIVRAISON]: [STATUT.EN_COURS, STATUT.EN_LIVRAISON, STATUT.ANNULEE],
-    [STATUT.LIVREE]: [],
+    [STATUT.EN_ATTENTE_PAIEMENT]: [STATUT.EN_COURS, STATUT.ANNULEE],
+    [STATUT.EN_COURS]: [STATUT.EN_PREPARATION, STATUT.EN_LIVRAISON, STATUT.ANNULEE],
+    [STATUT.EN_PREPARATION]: [STATUT.EN_LIVRAISON, STATUT.EN_COURS, STATUT.ANNULEE],
+    [STATUT.EN_LIVRAISON]: [STATUT.LIVREE, STATUT.ECHEC_LIVRAISON, STATUT.EN_PREPARATION],
+    [STATUT.ECHEC_LIVRAISON]: [STATUT.EN_PREPARATION, STATUT.EN_LIVRAISON, STATUT.ANNULEE],
+    [STATUT.LIVREE]: [STATUT.CLOTUREE],
+    [STATUT.CLOTUREE]: [],
     [STATUT.ANNULEE]: [],
   };
+  const estLivreurActif = (idUser) =>
+    loadRolesAndPermissions(db, idUser).permissions.includes(PERMISSIONS.LIVRAISONS_EFFECTUER) &&
+    Boolean(db.prepare('SELECT 1 FROM users WHERE id_user = ? AND actif = 1').get(idUser));
 
   router.patch('/commandes/:id/statut', perm(PERMISSIONS.COMMANDES_GERER), (req, res) => {
     const id = toInt(req.params.id, 'id');
@@ -165,21 +205,19 @@ function adminRoutes({ db, commerce, notifier }) {
     if (!(TRANSITIONS[commande.statut_commande] || []).includes(statut)) {
       throw conflict(`Transition interdite : ${commande.statut_commande} → ${statut}`);
     }
-    // Un paiement en attente pourrait encore aboutir : le client serait débité pour une commande annulée.
-    if (statut === STATUT.ANNULEE && db.prepare("SELECT 1 FROM payements WHERE id_commande = ? AND statut_paie = 'en_attente'").get(id)) {
+    // Un paiement en attente pourrait encore aboutir (débit sur une commande annulée, ou double validation).
+    if ([STATUT.ANNULEE, STATUT.EN_COURS].includes(statut) && commande.statut_commande === STATUT.EN_ATTENTE_PAIEMENT && db.prepare("SELECT 1 FROM payements WHERE id_commande = ? AND statut_paie = 'en_attente'").get(id)) {
       throw conflict('Un paiement est en cours de traitement');
     }
     let idLivreur = commande.id_livreur;
     if (statut === STATUT.EN_LIVRAISON) {
       idLivreur = req.body.id_livreur ? toInt(req.body.id_livreur, 'id_livreur') : commande.id_livreur;
       if (!idLivreur) throw badRequest('Un livreur doit être assigné');
-      const estLivreur = loadRolesAndPermissions(db, idLivreur).permissions.includes(PERMISSIONS.LIVRAISONS_EFFECTUER);
-      if (!estLivreur) throw badRequest('Cet utilisateur n’est pas livreur');
-      if (!db.prepare('SELECT 1 FROM users WHERE id_user = ? AND actif = 1').get(idLivreur)) {
-        throw badRequest('Ce livreur est désactivé');
-      }
+      if (!estLivreurActif(idLivreur)) throw badRequest('Cet utilisateur n’est pas un livreur actif');
     }
-    if (statut === STATUT.EN_COURS) idLivreur = null;
+    // Retour en préparation après une tournée : la commande est libérée pour une nouvelle affectation.
+    const retourDeTournee = [STATUT.EN_LIVRAISON, STATUT.ECHEC_LIVRAISON].includes(commande.statut_commande);
+    if ([STATUT.EN_COURS, STATUT.EN_PREPARATION].includes(statut) && retourDeTournee) idLivreur = null;
 
     transaction(db, () => {
       db.prepare(
@@ -191,10 +229,48 @@ function adminRoutes({ db, commerce, notifier }) {
       if (statut === STATUT.ANNULEE) commerce.restituerStock(id);
     });
 
-    notifier.notify(commande.id_user, 'commande', 'Mise à jour de commande', `Commande #${id} : ${statut.replace(/_/g, ' ')}.`);
+    commerce.suivreStatut(id, statut, {
+      auteur: req.user.id_user,
+      commentaire: req.body.commentaire || (statut === STATUT.ECHEC_LIVRAISON ? req.body.motif : null) || 'Mis à jour par l’administrateur',
+    });
     if (statut === STATUT.EN_LIVRAISON && idLivreur !== commande.id_livreur) {
       notifier.notify(idLivreur, 'livraison', 'Livraison assignée', `La commande #${id} vous a été assignée.`);
     }
+    journaliser(db, req, 'commande.statut', { id_commande: id, de: commande.statut_commande, vers: statut });
+    res.json(detailCommande(db, id));
+  });
+
+  // Affecter (ou retirer) un livreur sans démarrer la livraison : il la démarre depuis son application.
+  router.patch('/commandes/:id/livreur', perm(PERMISSIONS.COMMANDES_GERER), (req, res) => {
+    const id = toInt(req.params.id, 'id');
+    const commande = db.prepare('SELECT * FROM commandes WHERE id_commande = ?').get(id);
+    if (!commande) throw notFound('Commande introuvable');
+    const modifiables = [STATUT.EN_COURS, STATUT.EN_PREPARATION, STATUT.ECHEC_LIVRAISON];
+    if (!modifiables.includes(commande.statut_commande)) {
+      throw conflict('Le livreur ne peut être changé que sur une commande confirmée, en préparation ou en échec de livraison');
+    }
+    const idLivreur = req.body.id_livreur === null || req.body.id_livreur === undefined ? null : toInt(req.body.id_livreur, 'id_livreur');
+    if (idLivreur && !estLivreurActif(idLivreur)) throw badRequest('Cet utilisateur n’est pas un livreur actif');
+    // Échec de livraison : la commande repart en préparation pour la nouvelle tournée.
+    const statut = commande.statut_commande === STATUT.ECHEC_LIVRAISON ? STATUT.EN_PREPARATION : commande.statut_commande;
+    db.prepare('UPDATE commandes SET id_livreur = ?, statut_commande = ? WHERE id_commande = ?').run(idLivreur, statut, id);
+    const livreur = idLivreur && db.prepare('SELECT prenom, nom FROM users WHERE id_user = ?').get(idLivreur);
+    if (statut !== commande.statut_commande) {
+      commerce.suivreStatut(id, statut, { auteur: req.user.id_user, commentaire: 'Nouvelle tentative de livraison' });
+    }
+    if (idLivreur && idLivreur !== commande.id_livreur) {
+      notifier.notify(idLivreur, 'livraison', 'Livraison assignée', `La commande #${id} (${commande.ville}) vous a été assignée.`);
+    }
+    if (commande.id_livreur && commande.id_livreur !== idLivreur) {
+      notifier.notify(commande.id_livreur, 'livraison', 'Livraison retirée', `La commande #${id} ne vous est plus assignée.`);
+    }
+    db.prepare('INSERT INTO commande_historique (id_commande, statut, commentaire, id_auteur) VALUES (?, ?, ?, ?)').run(
+      id,
+      statut,
+      livreur ? `Livreur affecté : ${livreur.prenom} ${livreur.nom}` : 'Livreur retiré',
+      req.user.id_user,
+    );
+    journaliser(db, req, 'commande.livreur', { id_commande: id, id_livreur: idLivreur });
     res.json(detailCommande(db, id));
   });
 
@@ -234,6 +310,7 @@ function adminRoutes({ db, commerce, notifier }) {
     const id = toInt(req.params.id, 'id');
     const { changes } = db.prepare('UPDATE boutiques SET active = ? WHERE id_boutique = ?').run(req.body.active ? 1 : 0, id);
     if (!changes) throw notFound('Boutique introuvable');
+    journaliser(db, req, req.body.active ? 'boutique.activer' : 'boutique.desactiver', { id_boutique: id });
     res.json({ id_boutique: id, active: Boolean(req.body.active) });
   });
 
@@ -252,6 +329,7 @@ function adminRoutes({ db, commerce, notifier }) {
       `INSERT INTO regles_livraison (ville, frais, seuil_gratuite) VALUES (?, ?, ?)
        ON CONFLICT (ville) DO UPDATE SET frais = excluded.frais, seuil_gratuite = excluded.seuil_gratuite`,
     ).run(String(req.body.ville).trim(), frais, seuil);
+    journaliser(db, req, 'livraison.regle', { ville: String(req.body.ville).trim(), frais, seuil_gratuite: seuil });
     res.status(201).json(db.prepare('SELECT * FROM regles_livraison WHERE ville = ?').get(String(req.body.ville).trim()));
   });
 
@@ -260,14 +338,27 @@ function adminRoutes({ db, commerce, notifier }) {
     if (!regle) throw notFound('Règle introuvable');
     if (regle.ville === '*') throw badRequest('La règle par défaut ne peut pas être supprimée');
     db.prepare('DELETE FROM regles_livraison WHERE id_regle = ?').run(regle.id_regle);
+    journaliser(db, req, 'livraison.regle.supprimer', { ville: regle.ville });
     res.status(204).end();
   });
 
   // --- Statistiques des ventes -----------------------------------------------------------------
   router.get('/statistiques', perm(PERMISSIONS.STATISTIQUES_VOIR), (_req, res) => {
-    const payees = `c.statut_commande IN ('${STATUT.EN_COURS}', '${STATUT.EN_LIVRAISON}', '${STATUT.LIVREE}')`;
+    const payees = `c.statut_commande IN (${STATUTS_PAYES.map((st) => `'${st}'`).join(', ')})`;
     const one = (sql, ...p) => db.prepare(sql).get(...p);
+    const aujourdhui = "date(c.date_commande, 'localtime') = date('now', 'localtime')";
     res.json({
+      // Tableau de bord du jour.
+      commandes_jour: one(`SELECT COUNT(*) AS v FROM commandes c WHERE ${aujourdhui}`).v,
+      chiffre_affaires_jour: one(`SELECT COALESCE(SUM(total_commande), 0) AS v FROM commandes c WHERE ${payees} AND ${aujourdhui}`).v,
+      chiffre_affaires_mois: one(
+        `SELECT COALESCE(SUM(total_commande), 0) AS v FROM commandes c
+         WHERE ${payees} AND strftime('%Y-%m', c.date_commande, 'localtime') = strftime('%Y-%m', 'now', 'localtime')`,
+      ).v,
+      livraisons_en_cours: one('SELECT COUNT(*) AS v FROM commandes WHERE statut_commande = ?', STATUT.EN_LIVRAISON).v,
+      a_preparer: one('SELECT COUNT(*) AS v FROM commandes WHERE statut_commande IN (?, ?)', STATUT.EN_COURS, STATUT.EN_PREPARATION).v,
+      en_attente_paiement: one('SELECT COUNT(*) AS v FROM commandes WHERE statut_commande = ?', STATUT.EN_ATTENTE_PAIEMENT).v,
+      echecs_livraison: one('SELECT COUNT(*) AS v FROM commandes WHERE statut_commande = ?', STATUT.ECHEC_LIVRAISON).v,
       chiffre_affaires: one(`SELECT COALESCE(SUM(total_commande), 0) AS v FROM commandes c WHERE ${payees}`).v,
       nb_commandes: one('SELECT COUNT(*) AS v FROM commandes').v,
       nb_clients: one('SELECT COUNT(*) AS v FROM users').v,
@@ -292,6 +383,33 @@ function adminRoutes({ db, commerce, notifier }) {
         .prepare("SELECT id_produit, nom, quantite_stock FROM produits WHERE statut = 'publie' AND quantite_stock <= 5 ORDER BY quantite_stock LIMIT 10")
         .all(),
     });
+  });
+
+  // --- Journal d'activité ---------------------------------------------------------------------
+  router.get('/journal', perm(PERMISSIONS.JOURNAL_VOIR), (req, res) => {
+    const params = [];
+    let where = '1 = 1';
+    if (req.query.action) {
+      where += ' AND j.action LIKE ?';
+      params.push(`${String(req.query.action).trim()}%`);
+    }
+    if (req.query.id_user) {
+      where += ' AND j.id_user = ?';
+      params.push(toInt(req.query.id_user, 'id_user'));
+    }
+    const limite = Math.min(toInt(req.query.limite ?? 100, 'limite', { min: 1 }), 500);
+    const avant = req.query.avant ? toInt(req.query.avant, 'avant') : null;
+    if (avant) {
+      where += ' AND j.id_journal < ?';
+      params.push(avant);
+    }
+    const rows = db
+      .prepare(
+        `SELECT j.*, u.prenom, u.nom, u.telephone FROM journal_activite j LEFT JOIN users u ON u.id_user = j.id_user
+         WHERE ${where} ORDER BY j.id_journal DESC LIMIT ?`,
+      )
+      .all(...params, limite);
+    res.json(rows);
   });
 
   return router;

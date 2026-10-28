@@ -18,20 +18,20 @@ void main() {
         ChangeNotifierProvider(create: (_) => CartState(api)),
         ChangeNotifierProvider(create: (_) => ParametresState(api)..charger().catchError((_) {})),
       ],
-      child: const AgroPhytoApp(),
+      child: const FonctionPhytoApp(),
     ),
   );
 }
 
 final _navigatorKey = GlobalKey<NavigatorState>();
 
-class AgroPhytoApp extends StatelessWidget {
-  const AgroPhytoApp({super.key});
+class FonctionPhytoApp extends StatelessWidget {
+  const FonctionPhytoApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'AgroPhyto',
+      title: 'fonction Phyto',
       navigatorKey: _navigatorKey,
       debugShowCheckedModeBanner: false,
       theme: buildTheme(),
@@ -68,10 +68,40 @@ class _RootState extends State<_Root> {
       WidgetsBinding.instance.addPostFrameCallback((_) => _navigatorKey.currentState?.popUntil((r) => r.isFirst));
     }
     _idPrecedent = id;
-    if (!auth.initialise) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
-    }
+    if (!auth.initialise) return const _Demarrage();
     // La clé force la reconstruction complète (et le retour à la racine) au changement d'utilisateur.
     return HomeShell(key: ValueKey(auth.user?.id));
+  }
+}
+
+/// Écran de démarrage pendant la restauration de la session.
+class _Demarrage extends StatelessWidget {
+  const _Demarrage();
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.white,
+      body: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 96,
+              height: 96,
+              decoration: BoxDecoration(color: AppColors.vert, borderRadius: BorderRadius.circular(22)),
+              child: const Icon(Icons.agriculture, color: Colors.white, size: 56),
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              'fonction Phyto',
+              style: TextStyle(color: AppColors.vert, fontSize: 22, fontWeight: FontWeight.w800),
+            ),
+            const SizedBox(height: 32),
+            const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2.5)),
+          ],
+        ),
+      ),
+    );
   }
 }

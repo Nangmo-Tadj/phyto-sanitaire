@@ -11,7 +11,8 @@ import '../commandes/order_detail_screen.dart';
 import '../messages/chat_screen.dart';
 
 /// Espace livreur (diagramme de séquence « Gestion des livraisons ») :
-/// consulter les commandes à livrer, les prendre en charge, confirmer ou signaler un échec.
+/// consulter les commandes à livrer, les prendre en charge (ou démarrer celles affectées par
+/// l'administrateur), confirmer ou signaler un échec.
 class DeliveriesScreen extends StatefulWidget {
   const DeliveriesScreen({super.key});
 
@@ -60,11 +61,11 @@ class _DeliveriesScreenState extends State<DeliveriesScreen> with SingleTickerPr
     _charger();
   }
 
-  Future<void> _prendre(Commande c) async {
+  Future<void> _prendre(Commande c, {bool affectee = false}) async {
     try {
       await context.read<Api>().prendreLivraison(c.id);
       if (!mounted) return;
-      showMessage(context, 'Commande #${c.id} prise en charge');
+      showMessage(context, affectee ? 'Livraison #${c.id} démarrée' : 'Commande #${c.id} prise en charge');
       await _charger();
       if (mounted) _tabs.animateTo(1);
     } on ApiException catch (e) {
@@ -122,7 +123,10 @@ class _DeliveriesScreenState extends State<DeliveriesScreen> with SingleTickerPr
   @override
   Widget build(BuildContext context) {
     final l = _livraisons;
+    // Actives : en cours de livraison ou affectées par l'administrateur et à démarrer.
     final enCours = l?.mesLivraisons.where((c) => c.statut == StatutCommande.enLivraison).length ?? 0;
+    final aDemarrer = l?.mesLivraisons.where((c) => StatutCommande.aLivrer.contains(c.statut)).length ?? 0;
+    final actives = enCours + aDemarrer;
     return Scaffold(
       appBar: AppBar(
         title: const Text('Livraisons'),
@@ -130,7 +134,7 @@ class _DeliveriesScreenState extends State<DeliveriesScreen> with SingleTickerPr
           controller: _tabs,
           tabs: [
             Tab(text: l == null ? 'À livrer' : 'À livrer (${l.disponibles.length})'),
-            Tab(text: enCours == 0 ? 'Mes livraisons' : 'Mes livraisons ($enCours)'),
+            Tab(text: actives == 0 ? 'Mes livraisons' : 'Mes livraisons ($actives)'),
           ],
         ),
       ),
@@ -174,9 +178,24 @@ class _DeliveriesScreenState extends State<DeliveriesScreen> with SingleTickerPr
                     titre: 'Aucune livraison prise en charge',
                     message: 'Prenez en charge une commande depuis l’onglet « À livrer ».',
                   ),
+                  entete: aDemarrer == 0
+                      ? null
+                      : Card(
+                          color: AppColors.vertClair,
+                          child: ListTile(
+                            leading: const Icon(Icons.assignment_ind_outlined, color: AppColors.vert),
+                            title: Text(
+                              aDemarrer == 1
+                                  ? '1 livraison vous a été affectée'
+                                  : '$aDemarrer livraisons vous ont été affectées',
+                            ),
+                            subtitle: const Text('Démarrez-la au moment de partir chez le client.'),
+                          ),
+                        ),
                   itemBuilder: (c) => _LivraisonCard(
                     commande: c,
                     afficherStatut: true,
+                    affectee: StatutCommande.aLivrer.contains(c.statut),
                     onTap: () => _ouvrirDetail(c),
                     onAppeler: c.statut == StatutCommande.enLivraison && c.telephoneLivraison.isNotEmpty
                         ? () => _appeler(c.telephoneLivraison)
@@ -193,7 +212,15 @@ class _DeliveriesScreenState extends State<DeliveriesScreen> with SingleTickerPr
                             ),
                           )
                         : null,
-                    actions: c.statut != StatutCommande.enLivraison
+                    actions: StatutCommande.aLivrer.contains(c.statut)
+                        ? [
+                            BusyButton(
+                              label: 'Démarrer la livraison',
+                              icon: Icons.local_shipping,
+                              onPressed: () => _prendre(c, affectee: true),
+                            ),
+                          ]
+                        : c.statut != StatutCommande.enLivraison
                         ? const []
                         : [
                             BusyButton(
@@ -217,12 +244,19 @@ class _DeliveriesScreenState extends State<DeliveriesScreen> with SingleTickerPr
 }
 
 class _Liste extends StatelessWidget {
-  const _Liste({required this.commandes, required this.onRefresh, required this.vide, required this.itemBuilder});
+  const _Liste({
+    required this.commandes,
+    required this.onRefresh,
+    required this.vide,
+    required this.itemBuilder,
+    this.entete,
+  });
 
   final List<Commande> commandes;
   final Future<void> Function() onRefresh;
   final Widget vide;
   final Widget Function(Commande) itemBuilder;
+  final Widget? entete;
 
   @override
   Widget build(BuildContext context) {
@@ -238,9 +272,12 @@ class _Liste extends StatelessWidget {
           : ListView.separated(
               physics: const AlwaysScrollableScrollPhysics(),
               padding: const EdgeInsets.all(16),
-              itemCount: commandes.length,
+              itemCount: commandes.length + (entete == null ? 0 : 1),
               separatorBuilder: (_, _) => const SizedBox(height: 12),
-              itemBuilder: (_, i) => itemBuilder(commandes[i]),
+              itemBuilder: (_, i) {
+                if (entete == null) return itemBuilder(commandes[i]);
+                return i == 0 ? entete! : itemBuilder(commandes[i - 1]);
+              },
             ),
     );
   }
@@ -252,6 +289,7 @@ class _LivraisonCard extends StatelessWidget {
     required this.onTap,
     this.actions = const [],
     this.afficherStatut = false,
+    this.affectee = false,
     this.onAppeler,
     this.onMessage,
   });
@@ -260,6 +298,9 @@ class _LivraisonCard extends StatelessWidget {
   final VoidCallback onTap;
   final List<Widget> actions;
   final bool afficherStatut;
+
+  /// Affectée par l'administrateur, pas encore démarrée.
+  final bool affectee;
   final VoidCallback? onAppeler;
   final VoidCallback? onMessage;
 
@@ -292,6 +333,13 @@ class _LivraisonCard extends StatelessWidget {
               ),
               const SizedBox(height: 2),
               Text(dateHeure(c.date), style: TextStyle(color: Colors.grey.shade600, fontSize: 12)),
+              if (affectee) ...[
+                const SizedBox(height: 6),
+                const Align(
+                  alignment: Alignment.centerLeft,
+                  child: Tag('Affectée · à démarrer', color: AppColors.terre),
+                ),
+              ],
               const Divider(height: 20),
               _Ligne(
                 icon: Icons.location_city,

@@ -57,7 +57,19 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
               controller: _nouveau,
               obscureText: true,
               decoration: const InputDecoration(labelText: 'Nouveau mot de passe'),
-              validator: (v) => v == null || v.length < 6 ? '6 caractères minimum' : null,
+              validator: (v) {
+                if (v == null || v.length < 6) return '6 caractères minimum';
+                // Mot de passe fort exigé des administrateurs (vérifié aussi par le serveur).
+                final admin = context.read<AuthState>().user?.hasRole('admin') ?? false;
+                if (admin &&
+                    (v.length < 10 ||
+                        !RegExp(r'[a-z]').hasMatch(v) ||
+                        !RegExp(r'[A-Z]').hasMatch(v) ||
+                        !RegExp(r'\d').hasMatch(v))) {
+                  return 'Administrateur : 10 caractères, majuscule, minuscule et chiffre';
+                }
+                return null;
+              },
             ),
             const SizedBox(height: 12),
             TextFormField(

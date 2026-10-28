@@ -12,6 +12,7 @@ import '../notifications/notifications_screen.dart';
 import '../vendeur/shop_screen.dart';
 import 'change_password_screen.dart';
 import 'edit_profile_screen.dart';
+import 'two_factor_screen.dart';
 
 /// Gérer son compte, et accès aux espaces selon les rôles (vendeur, livreur, administrateur).
 class AccountScreen extends StatelessWidget {
@@ -155,6 +156,22 @@ class AccountScreen extends StatelessWidget {
                     onTap: () => _ouvrir(context, const ChangePasswordScreen()),
                   ),
                   ListTile(
+                    leading: Icon(
+                      user.totpActif ? Icons.verified_user : Icons.shield_outlined,
+                      color: user.totpActif ? AppColors.vert : null,
+                    ),
+                    title: const Text('Double authentification'),
+                    subtitle: Text(
+                      user.totpActif
+                          ? 'Activée'
+                          : user.hasRole('admin')
+                          ? 'Recommandée pour les administrateurs'
+                          : 'Désactivée',
+                    ),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () => _ouvrir(context, const TwoFactorScreen()),
+                  ),
+                  ListTile(
                     leading: const Icon(Icons.notifications_outlined),
                     title: const Text('Notifications'),
                     trailing: const Icon(Icons.chevron_right),
@@ -188,7 +205,11 @@ class AccountScreen extends StatelessWidget {
               icon: const Icon(Icons.logout),
               label: const Text('Se déconnecter'),
             ),
-            const SizedBox(height: 8),
+            TextButton(
+              style: TextButton.styleFrom(foregroundColor: Colors.red.shade700),
+              onPressed: () => showDialog<void>(context: context, builder: (_) => const _SupprimerCompteDialog()),
+              child: const Text('Supprimer mon compte'),
+            ),
             if (user.derniereConnexion != null)
               Center(
                 child: Text(
@@ -199,6 +220,79 @@ class AccountScreen extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// Suppression définitive du compte, confirmée par le mot de passe.
+class _SupprimerCompteDialog extends StatefulWidget {
+  const _SupprimerCompteDialog();
+
+  @override
+  State<_SupprimerCompteDialog> createState() => _SupprimerCompteDialogState();
+}
+
+class _SupprimerCompteDialogState extends State<_SupprimerCompteDialog> {
+  final _motDePasse = TextEditingController();
+  bool _envoi = false;
+
+  @override
+  void dispose() {
+    _motDePasse.dispose();
+    super.dispose();
+  }
+
+  Future<void> _supprimer() async {
+    setState(() => _envoi = true);
+    final auth = context.read<AuthState>();
+    final cart = context.read<CartState>();
+    final navigator = Navigator.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await auth.supprimerCompte(_motDePasse.text);
+      cart.reinitialiser();
+      navigator.pop();
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Votre compte a été supprimé'), behavior: SnackBarBehavior.floating),
+      );
+    } catch (e) {
+      if (mounted) {
+        setState(() => _envoi = false);
+        showMessage(context, e, erreur: true);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Supprimer mon compte'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Vos informations personnelles, votre panier, vos messages et notifications seront effacés '
+            'définitivement. Vos commandes passées sont conservées de façon anonyme pour la comptabilité.',
+          ),
+          const SizedBox(height: 16),
+          TextField(
+            controller: _motDePasse,
+            obscureText: true,
+            decoration: const InputDecoration(labelText: 'Mot de passe'),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(onPressed: _envoi ? null : () => Navigator.pop(context), child: const Text('Annuler')),
+        FilledButton(
+          style: FilledButton.styleFrom(backgroundColor: Colors.red.shade700),
+          onPressed: _envoi ? null : _supprimer,
+          child: _envoi
+              ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+              : const Text('Supprimer'),
+        ),
+      ],
     );
   }
 }

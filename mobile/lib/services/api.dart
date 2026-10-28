@@ -92,8 +92,10 @@ class Api {
       (data as List).map((e) => f(e as Map<String, dynamic>)).toList();
 
   // --- Authentification & compte ---------------------------------------------
-  Future<(String, User)> connexion(String identifiant, String motDePasse) async {
-    final d = await post('/auth/connexion', {'identifiant': identifiant, 'mot_de_passe': motDePasse});
+  /// Renvoie null si la double authentification est active et que [code] manque.
+  Future<(String, User)?> connexion(String identifiant, String motDePasse, {String? code}) async {
+    final d = await post('/auth/connexion', {'identifiant': identifiant, 'mot_de_passe': motDePasse, 'code': ?code});
+    if (d['deux_facteurs'] == true) return null;
     return (d['token'] as String, User.fromJson(d['utilisateur']));
   }
 
@@ -113,6 +115,17 @@ class Api {
   Future<User> modifierCompte(Map<String, dynamic> data) async => User.fromJson(await put('/compte', data));
   Future<String> changerMotDePasse(String ancien, String nouveau) async =>
       (await put('/compte/mot-de-passe', {'ancien': ancien, 'nouveau': nouveau}))['token'];
+  Future<({String secret, String otpauth})> initier2fa(String motDePasse) async {
+    final d = await post('/compte/2fa/initier', {'mot_de_passe': motDePasse});
+    return (secret: d['secret'] as String, otpauth: d['otpauth'] as String);
+  }
+
+  Future<User> activer2fa(String code) async => User.fromJson(await post('/compte/2fa/activer', {'code': code}));
+  Future<User> desactiver2fa(String motDePasse, String code) async =>
+      User.fromJson(await post('/compte/2fa/desactiver', {'mot_de_passe': motDePasse, 'code': code}));
+
+  /// Supprime définitivement le compte (données personnelles effacées).
+  Future<void> supprimerCompte(String motDePasse) => _send('DELETE', '/compte', body: {'mot_de_passe': motDePasse});
   Future<void> newsletterCompte(bool abonne) => put('/compte/newsletter', {'abonne': abonne});
   Future<void> newsletter(String email) => post('/newsletter', {'email': email});
 
@@ -214,6 +227,7 @@ class Api {
   Future<List<Commande>> mesCommandes() async => _list(await get('/commandes'), Commande.fromJson);
   Future<Commande> commande(int id) async => Commande.fromJson(await get('/commandes/$id'));
   Future<Commande> annulerCommande(int id) async => Commande.fromJson(await post('/commandes/$id/annuler'));
+  Future<Commande> confirmerReception(int id) async => Commande.fromJson(await post('/commandes/$id/reception'));
   Future<Commande> noterCommande(int id, int note, String? commentaire) async =>
       Commande.fromJson(await post('/commandes/$id/avis', {'note_avis': note, 'commentaire': commentaire}));
 
@@ -266,12 +280,37 @@ class Api {
       Role.fromJson(await put('/admin/roles/$id/permissions', {'permissions': permissions}));
   Future<List<PermissionInfo>> permissions() async => _list(await get('/admin/permissions'), PermissionInfo.fromJson);
 
-  Future<List<Commande>> toutesCommandes({String? statut}) async =>
-      _list(await get('/admin/commandes', {'statut': statut}), Commande.fromJson);
+  /// [statuts] : un ou plusieurs statuts ; [q] : n° (#12), client ou téléphone ; [du]/[au] : AAAA-MM-JJ.
+  Future<List<Commande>> toutesCommandes({
+    List<String>? statuts,
+    String? q,
+    String? du,
+    String? au,
+    String? ville,
+    int? idLivreur,
+  }) async => _list(
+    await get('/admin/commandes', {
+      'statut': statuts?.join(','),
+      'q': q,
+      'du': du,
+      'au': au,
+      'ville': ville,
+      'id_livreur': idLivreur,
+    }),
+    Commande.fromJson,
+  );
   Future<Commande> changerStatutCommande(int id, String statut, {int? idLivreur, String? motif}) async =>
       Commande.fromJson(
         await patch('/admin/commandes/$id/statut', {'statut': statut, 'id_livreur': ?idLivreur, 'motif': ?motif}),
       );
+
+  /// Affecte un livreur (null : le retire) sans démarrer la livraison.
+  Future<Commande> affecterLivreur(int id, int? idLivreur) async =>
+      Commande.fromJson(await patch('/admin/commandes/$id/livreur', {'id_livreur': idLivreur}));
+  Future<List<EntreeJournal>> journal({String? action, int? idUser, int? avant}) async => _list(
+    await get('/admin/journal', {'action': action, 'id_user': idUser, 'avant': avant, 'limite': 50}),
+    EntreeJournal.fromJson,
+  );
   Future<List<Paiement>> tousPaiements({String? statut}) async =>
       _list(await get('/admin/paiements', {'statut': statut}), Paiement.fromJson);
   Future<List<Boutique>> boutiques() async => _list(await get('/admin/boutiques'), Boutique.fromJson);

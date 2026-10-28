@@ -49,7 +49,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
     try {
       final s = await _api.support();
       if (!mounted) return;
-      await _ouvrir(s['id_user'] as int, 'Service client AgroPhyto', s['telephone'] as String?);
+      await _ouvrir(s['id_user'] as int, 'Service client fonction Phyto', s['telephone'] as String?);
     } catch (e) {
       if (mounted) showMessage(context, e, erreur: true);
     }

@@ -32,7 +32,19 @@ class _LoginScreenState extends State<LoginScreen> {
 
   Future<void> _connexion() async {
     if (!_form.currentState!.validate()) return;
-    await context.read<AuthState>().connexion(_identifiant.text.trim(), _motDePasse.text);
+    final auth = context.read<AuthState>();
+    final identifiant = _identifiant.text.trim();
+    final motDePasse = _motDePasse.text;
+    if (!await auth.connexion(identifiant, motDePasse)) {
+      // Double authentification : le code est vérifié dans la boîte de dialogue.
+      if (!mounted) return;
+      final ok = await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => _CodeDialog(valider: (code) => auth.connexion(identifiant, motDePasse, code: code)),
+      );
+      if (ok != true) return;
+    }
     if (mounted) Navigator.pop(context, true);
   }
 
@@ -106,8 +118,10 @@ class _LoginScreenState extends State<LoginScreen> {
                     BusyButton(label: 'Se connecter', onPressed: _connexion),
                     const SizedBox(height: 12),
                     TextButton(onPressed: _creerCompte, child: const Text('Pas encore de compte ? Créer un compte')),
-                    const SizedBox(height: 16),
-                    _DemoAccounts(onSelect: _demo),
+                    if (context.watch<ParametresState>().comptesDemo) ...[
+                      const SizedBox(height: 16),
+                      _DemoAccounts(onSelect: _demo),
+                    ],
                   ],
                 ),
               ),
@@ -115,6 +129,85 @@ class _LoginScreenState extends State<LoginScreen> {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Saisie du code à 6 chiffres de l'application d'authentification.
+class _CodeDialog extends StatefulWidget {
+  const _CodeDialog({required this.valider});
+
+  final Future<bool> Function(String code) valider;
+
+  @override
+  State<_CodeDialog> createState() => _CodeDialogState();
+}
+
+class _CodeDialogState extends State<_CodeDialog> {
+  final _code = TextEditingController();
+  String? _erreur;
+  bool _envoi = false;
+
+  @override
+  void dispose() {
+    _code.dispose();
+    super.dispose();
+  }
+
+  Future<void> _valider() async {
+    final code = _code.text.replaceAll(' ', '');
+    if (!RegExp(r'^\d{6}$').hasMatch(code)) {
+      setState(() => _erreur = 'Le code comporte 6 chiffres');
+      return;
+    }
+    setState(() {
+      _envoi = true;
+      _erreur = null;
+    });
+    try {
+      final ok = await widget.valider(code);
+      if (mounted) Navigator.pop(context, ok);
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _envoi = false;
+          _erreur = '$e';
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Vérification en deux étapes'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text('Saisissez le code à 6 chiffres affiché par votre application d’authentification.'),
+          const SizedBox(height: 16),
+          TextField(
+            controller: _code,
+            autofocus: true,
+            keyboardType: TextInputType.number,
+            maxLength: 6,
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 24, letterSpacing: 8),
+            autofillHints: const [AutofillHints.oneTimeCode],
+            decoration: InputDecoration(counterText: '', errorText: _erreur, hintText: '000000'),
+            onSubmitted: (_) => _valider(),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(onPressed: _envoi ? null : () => Navigator.pop(context, false), child: const Text('Annuler')),
+        FilledButton(
+          onPressed: _envoi ? null : _valider,
+          child: _envoi
+              ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+              : const Text('Valider'),
+        ),
+      ],
     );
   }
 }
@@ -210,7 +303,7 @@ class _Logo extends StatelessWidget {
         ),
         const SizedBox(height: 12),
         Text(
-          'AgroPhyto',
+          'fonction Phyto',
           style: Theme.of(
             context,
           ).textTheme.headlineMedium?.copyWith(color: AppColors.vert, fontWeight: FontWeight.w800),

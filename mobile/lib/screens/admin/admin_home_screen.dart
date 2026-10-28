@@ -11,6 +11,7 @@ import '../../utils/format.dart';
 import '../../widgets/common.dart';
 import 'admin_categories_screen.dart';
 import 'admin_delivery_rules_screen.dart';
+import 'admin_journal_screen.dart';
 import 'admin_orders_screen.dart';
 import 'admin_payments_screen.dart';
 import 'admin_products_screen.dart';
@@ -71,6 +72,13 @@ class _AdminHomeScreenState extends State<AdminHomeScreen> {
                   'Bonjour ${user.prenom}',
                   style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w700),
                 ),
+              ),
+            if (_future != null)
+              FutureBuilder<Statistiques>(
+                future: _future,
+                // Les erreurs sont affichées par la section statistiques plus bas.
+                builder: (context, snap) =>
+                    snap.hasData ? _TableauDeBord(stats: snap.data!, onRetour: _rafraichir) : const SizedBox.shrink(),
               ),
             if (entrees.isNotEmpty) ...[
               const SectionTitle('Gestion'),
@@ -148,6 +156,115 @@ class _ParametresCardState extends State<_ParametresCard> {
   }
 }
 
+/// Activité du jour et commandes à traiter.
+class _TableauDeBord extends StatelessWidget {
+  const _TableauDeBord({required this.stats, required this.onRetour});
+  final Statistiques stats;
+  final Future<void> Function() onRetour;
+
+  @override
+  Widget build(BuildContext context) {
+    final peutGerer = context.watch<AuthState>().user?.can(Perm.commandesGerer) ?? false;
+    final indicateurs = <(String, String, IconData, Color, List<String>?)>[
+      ('Commandes du jour', '${stats.commandesJour}', Icons.today, const Color(0xFF1565C0), null),
+      ('CA du jour', fcfa(stats.chiffreAffairesJour), Icons.payments_outlined, AppColors.vert, null),
+      ('CA du mois', fcfa(stats.chiffreAffairesMois), Icons.calendar_month, AppColors.vert, null),
+      (
+        'Livraisons en cours',
+        '${stats.livraisonsEnCours}',
+        Icons.local_shipping_outlined,
+        couleurStatut(StatutCommande.enLivraison),
+        [StatutCommande.enLivraison],
+      ),
+      (
+        'À préparer',
+        '${stats.aPreparer}',
+        Icons.inventory_outlined,
+        couleurStatut(StatutCommande.enPreparation),
+        [StatutCommande.enCours, StatutCommande.enPreparation],
+      ),
+      (
+        'En attente de paiement',
+        '${stats.enAttentePaiement}',
+        Icons.hourglass_empty,
+        couleurStatut(StatutCommande.enAttentePaiement),
+        [StatutCommande.enAttentePaiement],
+      ),
+      (
+        'Échecs de livraison',
+        '${stats.echecsLivraison}',
+        Icons.report_problem_outlined,
+        couleurStatut(StatutCommande.echecLivraison),
+        [StatutCommande.echecLivraison],
+      ),
+    ];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const SectionTitle('Tableau de bord'),
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final colonnes = constraints.maxWidth >= 600 ? 4 : 2;
+            final largeur = (constraints.maxWidth - (colonnes - 1) * 10) / colonnes;
+            return Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              children: [
+                for (final (label, valeur, icon, couleur, statuts) in indicateurs)
+                  SizedBox(
+                    width: largeur,
+                    child: Card(
+                      clipBehavior: Clip.antiAlias,
+                      child: InkWell(
+                        onTap: statuts == null || !peutGerer
+                            ? null
+                            : () async {
+                                await Navigator.push(
+                                  context,
+                                  MaterialPageRoute(builder: (_) => AdminOrdersScreen(statutsInitiaux: statuts)),
+                                );
+                                if (context.mounted) onRetour();
+                              },
+                        child: Padding(
+                          padding: const EdgeInsets.all(12),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Icon(icon, color: couleur, size: 20),
+                                  const Spacer(),
+                                  if (statuts != null && peutGerer)
+                                    Icon(Icons.chevron_right, size: 18, color: Colors.grey.shade500),
+                                ],
+                              ),
+                              const SizedBox(height: 6),
+                              FittedBox(
+                                fit: BoxFit.scaleDown,
+                                alignment: Alignment.centerLeft,
+                                child: Text(valeur, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 18)),
+                              ),
+                              Text(
+                                label,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            );
+          },
+        ),
+      ],
+    );
+  }
+}
+
 class _EntreeMenu {
   const _EntreeMenu(this.titre, this.icon, this.permission, this.builder);
   final String titre;
@@ -179,6 +296,7 @@ final _entreesMenu = <_EntreeMenu>[
     Perm.livraisonRegles,
     (_) => const AdminDeliveryRulesScreen(),
   ),
+  _EntreeMenu('Journal d\'activité', Icons.history, Perm.journalVoir, (_) => const AdminJournalScreen()),
 ];
 
 class _MenuGrid extends StatelessWidget {

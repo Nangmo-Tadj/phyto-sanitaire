@@ -10,6 +10,8 @@ module.exports = {
   paymentCallbackSecret: process.env.PAYMENT_CALLBACK_SECRET || 'callback-secret-dev',
   // Délai de réponse simulé de l'opérateur (MTN MoMo / Orange Money).
   paymentMockDelayMs: Number(process.env.PAYMENT_MOCK_DELAY_MS ?? 4000),
-  // Connexion sans mot de passe aux comptes de démonstration (DEMO_ACCOUNTS=false pour la désactiver en production).
-  demoAccounts: process.env.DEMO_ACCOUNTS !== 'false',
+  production: process.env.NODE_ENV === 'production',
+  // Connexion sans mot de passe aux comptes de démonstration : désactivée par défaut en production
+  // (elle donnerait l'accès administrateur à tous). DEMO_ACCOUNTS=true|false pour forcer.
+  demoAccounts: process.env.DEMO_ACCOUNTS ? process.env.DEMO_ACCOUNTS === 'true' : process.env.NODE_ENV !== 'production',
 };
