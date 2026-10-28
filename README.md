@@ -134,6 +134,11 @@ Chaque changement est enregistré dans `commande_historique` (date, auteur, comm
 - **Blocage** d'un identifiant pendant 15 minutes après 5 échecs de connexion.
 - **Journal d'activité** (Administration → Journal d'activité, `GET /api/admin/journal`) : connexions, échecs, changements de statut, rôles, paramètres…
 
+## Hébergement
+
+L'API se déploie sur Railway depuis ce dépôt (base SQLite sur un volume) : voir
+[docs/railway.md](docs/railway.md).
+
 ## Publication sur Google Play
 
 Voir [`docs/google-play.md`](docs/google-play.md) (fiche, signature, construction du `.aab`, tests) et [`docs/passation.md`](docs/passation.md) (remise des accès au propriétaire).

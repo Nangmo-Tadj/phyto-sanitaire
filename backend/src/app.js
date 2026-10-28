@@ -39,7 +39,9 @@ function createApp(options = {}) {
 
   const ctx = { db, config, notifier, commerce, paymentProvider };
   const app = express();
-  app.set('trust proxy', 'loopback'); // IP réelle derrière un proxy local (journal d'activité)
+  // IP réelle des clients derrière un proxy (journal d'activité) : local par défaut,
+  // TRUST_PROXY=1 derrière le proxy d'un hébergeur (Railway, Render…).
+  app.set('trust proxy', config.trustProxy);
   app.use(cors());
   app.use(express.json({ limit: '1mb' }));
 
