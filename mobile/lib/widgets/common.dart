@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
 import '../config.dart';
@@ -182,6 +184,9 @@ class ProductImage extends StatelessWidget {
         height: size,
         child: url == null
             ? placeholder
+            : url.startsWith('file://')
+            // Photo ajoutée en mode démo (enregistrée sur le téléphone).
+            ? Image.file(File.fromUri(Uri.parse(url)), fit: BoxFit.cover, errorBuilder: (_, _, _) => placeholder)
             : Image.network(url, fit: BoxFit.cover, errorBuilder: (_, _, _) => placeholder),
       ),
     );

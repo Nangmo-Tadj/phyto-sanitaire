@@ -11,14 +11,19 @@ class AuthState extends ChangeNotifier {
   }
 
   static const _tokenKey = 'auth_token';
+  static const _demoKey = 'mode_demo';
   final Api api;
   User? user;
   bool initialise = false;
 
   bool get connecte => user != null;
 
+  /// Session du mode démo (hors ligne, données fictives).
+  bool get demo => api.demo;
+
   Future<void> restaurer() async {
     final prefs = await SharedPreferences.getInstance();
+    if (prefs.getBool(_demoKey) ?? false) await api.activerDemo();
     api.token = prefs.getString(_tokenKey);
     if (api.token != null) {
       try {
@@ -48,9 +53,29 @@ class AuthState extends ChangeNotifier {
     return true;
   }
 
+  /// Ouvre le mode démo hors ligne avec le profil choisi (client, vendeur, livreur, admin).
   Future<void> connexionDemo(String profil) async {
-    final (token, u) = await api.connexionDemo(profil);
-    await _ouvrirSession(token, u);
+    await api.activerDemo();
+    try {
+      final (token, u) = await api.connexionDemo(profil);
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_demoKey, true);
+      await _ouvrirSession(token, u);
+    } catch (_) {
+      if (user == null) api.quitterDemo();
+      rethrow;
+    }
+  }
+
+  /// Remet les données de démonstration à zéro en gardant le profil connecté.
+  Future<void> reinitialiserDemo() async {
+    await api.reinitialiserDemo();
+    try {
+      user = await api.moi();
+      notifyListeners();
+    } catch (_) {
+      await _fermer();
+    }
   }
 
   Future<void> inscription(Map<String, dynamic> data) async {
@@ -93,8 +118,10 @@ class AuthState extends ChangeNotifier {
   Future<void> _fermer() async {
     api.token = null;
     user = null;
+    api.quitterDemo();
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_tokenKey);
+    await prefs.remove(_demoKey);
     notifyListeners();
   }
 }

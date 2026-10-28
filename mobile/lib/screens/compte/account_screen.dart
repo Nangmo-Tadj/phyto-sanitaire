@@ -92,6 +92,7 @@ class AccountScreen extends StatelessWidget {
                 ),
               ),
             ),
+            if (auth.demo) const _CarteDemo(),
             if (user.can(Perm.boutiqueGerer) || user.can(Perm.livraisonsEffectuer) || estAdmin) ...[
               const SectionTitle('Mes espaces'),
               Card(
@@ -193,9 +194,11 @@ class AccountScreen extends StatelessWidget {
               onPressed: () async {
                 if (await confirmer(
                   context,
-                  'Déconnexion',
-                  'Voulez-vous vous déconnecter ?',
-                  action: 'Se déconnecter',
+                  auth.demo ? 'Quitter le mode démo' : 'Déconnexion',
+                  auth.demo
+                      ? 'Vous revenez à l’application normale. Vos données de démonstration restent sur ce téléphone.'
+                      : 'Voulez-vous vous déconnecter ?',
+                  action: auth.demo ? 'Quitter' : 'Se déconnecter',
                 )) {
                   if (!context.mounted) return;
                   context.read<CartState>().reinitialiser();
@@ -203,13 +206,14 @@ class AccountScreen extends StatelessWidget {
                 }
               },
               icon: const Icon(Icons.logout),
-              label: const Text('Se déconnecter'),
+              label: Text(auth.demo ? 'Quitter le mode démo' : 'Se déconnecter'),
             ),
-            TextButton(
-              style: TextButton.styleFrom(foregroundColor: Colors.red.shade700),
-              onPressed: () => showDialog<void>(context: context, builder: (_) => const _SupprimerCompteDialog()),
-              child: const Text('Supprimer mon compte'),
-            ),
+            if (!auth.demo)
+              TextButton(
+                style: TextButton.styleFrom(foregroundColor: Colors.red.shade700),
+                onPressed: () => showDialog<void>(context: context, builder: (_) => const _SupprimerCompteDialog()),
+                child: const Text('Supprimer mon compte'),
+              ),
             if (user.derniereConnexion != null)
               Center(
                 child: Text(
@@ -293,6 +297,63 @@ class _SupprimerCompteDialogState extends State<_SupprimerCompteDialog> {
               : const Text('Supprimer'),
         ),
       ],
+    );
+  }
+}
+
+/// Mode démo : rappel des données fictives et remise à zéro.
+class _CarteDemo extends StatelessWidget {
+  const _CarteDemo();
+
+  Future<void> _reinitialiser(BuildContext context) async {
+    if (!await confirmer(
+      context,
+      'Réinitialiser la démo',
+      'Les commandes, messages et modifications faits en démo seront effacés.',
+      action: 'Réinitialiser',
+    )) {
+      return;
+    }
+    if (!context.mounted) return;
+    final cart = context.read<CartState>();
+    await context.read<AuthState>().reinitialiserDemo();
+    await cart.charger().catchError((_) {});
+    if (context.mounted) showMessage(context, 'Données de démonstration réinitialisées');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      color: const Color(0xFFFFF3E0),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 14, 8, 6),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Row(
+              children: [
+                Icon(Icons.play_circle_outline, color: AppColors.terre),
+                SizedBox(width: 8),
+                Text('Mode démo', style: TextStyle(fontWeight: FontWeight.w700)),
+              ],
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'Données fictives, enregistrées uniquement sur ce téléphone. Aucun paiement réel n’est effectué '
+              '(un numéro finissant par 0000 simule un refus). Mot de passe des comptes : password123.',
+              style: TextStyle(fontSize: 13),
+            ),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton.icon(
+                onPressed: () => _reinitialiser(context),
+                icon: const Icon(Icons.restart_alt),
+                label: const Text('Réinitialiser les données'),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

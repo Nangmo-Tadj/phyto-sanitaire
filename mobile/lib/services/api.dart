@@ -7,6 +7,8 @@ import 'package:http_parser/http_parser.dart';
 
 import '../config.dart';
 import '../models/models.dart';
+import 'demo/demo_client.dart';
+import 'demo/demo_server.dart';
 
 class ApiException implements Exception {
   final int status;
@@ -20,10 +22,30 @@ class ApiException implements Exception {
 
 /// Client HTTP de l'API REST (backend/src/app.js).
 class Api {
-  Api({http.Client? client}) : _http = client ?? http.Client();
+  Api({http.Client? client}) : _reseau = client ?? http.Client() {
+    _http = _reseau;
+  }
 
-  final http.Client _http;
+  final http.Client _reseau;
+  late http.Client _http;
+  DemoServer? _serveurDemo;
   String? token;
+
+  /// Mode démo : l'application fonctionne hors ligne avec des données fictives.
+  bool get demo => _http is DemoClient;
+
+  Future<void> activerDemo() async {
+    _serveurDemo ??= await chargerServeurDemo();
+    _http = DemoClient(_serveurDemo!);
+  }
+
+  /// Remet les données de démonstration dans leur état de départ.
+  Future<void> reinitialiserDemo() async {
+    _serveurDemo = await chargerServeurDemo(reinitialiser: true);
+    if (demo) _http = DemoClient(_serveurDemo!);
+  }
+
+  void quitterDemo() => _http = _reseau;
 
   /// Appelé quand le serveur répond 401 (session expirée).
   void Function()? onUnauthorized;

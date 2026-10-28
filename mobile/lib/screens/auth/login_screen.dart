@@ -118,10 +118,8 @@ class _LoginScreenState extends State<LoginScreen> {
                     BusyButton(label: 'Se connecter', onPressed: _connexion),
                     const SizedBox(height: 12),
                     TextButton(onPressed: _creerCompte, child: const Text('Pas encore de compte ? Créer un compte')),
-                    if (context.watch<ParametresState>().comptesDemo) ...[
-                      const SizedBox(height: 16),
-                      _DemoAccounts(onSelect: _demo),
-                    ],
+                    const SizedBox(height: 16),
+                    _DemoAccounts(onSelect: _demo),
                   ],
                 ),
               ),
@@ -257,12 +255,12 @@ class _DemoAccountsState extends State<_DemoAccounts> {
               children: [
                 Icon(Icons.play_circle_outline, color: AppColors.vert),
                 SizedBox(width: 8),
-                Text('Compte de démonstration', style: TextStyle(fontWeight: FontWeight.w700)),
+                Text('Mode démo', style: TextStyle(fontWeight: FontWeight.w700)),
               ],
             ),
             const SizedBox(height: 4),
             Text(
-              'Essayez l’application sans créer de compte.',
+              'Essayez chaque espace sans compte ni connexion internet, avec des données fictives.',
               style: TextStyle(color: Colors.grey.shade700, fontSize: 13),
             ),
             const SizedBox(height: 10),

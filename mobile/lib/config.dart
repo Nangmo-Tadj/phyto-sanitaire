@@ -16,6 +16,6 @@ class AppConfig {
   /// Résout une URL d'image relative (/uploads/...) renvoyée par l'API.
   static String? imageUrl(String? path) {
     if (path == null || path.isEmpty) return null;
-    return path.startsWith('http') ? path : '$baseUrl$path';
+    return path.startsWith('http') || path.startsWith('file://') ? path : '$baseUrl$path';
   }
 }

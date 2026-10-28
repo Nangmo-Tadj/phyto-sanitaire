@@ -43,6 +43,16 @@ class FonctionPhytoApp extends StatelessWidget {
         GlobalCupertinoLocalizations.delegate,
       ],
       home: const _Root(),
+      builder: (context, child) => context.select<AuthState, bool>((a) => a.demo)
+          ? Banner(
+              message: 'DÉMO',
+              location: BannerLocation.topEnd,
+              textDirection: TextDirection.ltr,
+              layoutDirection: TextDirection.ltr,
+              color: AppColors.terre,
+              child: child!,
+            )
+          : child!,
     );
   }
 }
@@ -66,6 +76,10 @@ class _RootState extends State<_Root> {
     // À la connexion, la pile est conservée pour reprendre l'action en cours (ajout au panier...).
     if (_idPrecedent != null && id != _idPrecedent) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _navigatorKey.currentState?.popUntil((r) => r.isFirst));
+    }
+    if (auth.initialise && id != _idPrecedent) {
+      // Entrée ou sortie du mode démo : les paramètres viennent d'un autre serveur.
+      WidgetsBinding.instance.addPostFrameCallback((_) => context.read<ParametresState>().charger().catchError((_) {}));
     }
     _idPrecedent = id;
     if (!auth.initialise) return const _Demarrage();

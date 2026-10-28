@@ -10,6 +10,7 @@ import '../../theme.dart';
 import '../../utils/format.dart';
 import '../../widgets/common.dart';
 import '../auth/auth_gate.dart';
+import '../auth/login_screen.dart';
 import '../notifications/notifications_screen.dart';
 import 'product_detail_screen.dart';
 
@@ -239,7 +240,22 @@ class _CatalogueScreenState extends State<CatalogueScreen> {
                       icon: Icons.cloud_off,
                       titre: 'Catalogue indisponible',
                       message: '${snap.error}',
-                      action: OutlinedButton(onPressed: _actualiser, child: const Text('Réessayer')),
+                      action: Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        alignment: WrapAlignment.center,
+                        children: [
+                          OutlinedButton(onPressed: _actualiser, child: const Text('Réessayer')),
+                          // Serveur injoignable : l'application reste utilisable hors ligne en démo.
+                          if (!context.read<AuthState>().connecte)
+                            FilledButton.icon(
+                              onPressed: () =>
+                                  Navigator.push(context, MaterialPageRoute(builder: (_) => const LoginScreen())),
+                              icon: const Icon(Icons.play_circle_outline),
+                              label: const Text('Essayer le mode démo'),
+                            ),
+                        ],
+                      ),
                     ),
                   );
                 }
